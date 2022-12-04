@@ -5,7 +5,18 @@
 - Youtube lectures: https://www.youtube.com/playlist?list=PLrw6a1wE39_tb2fErI4-WkMbsvGQk9_UB
 - https://github.com/nsiregar/mit-go
 
-## Prerequisites
+## Grading
+Final course grades will be based on:
+- 50% labs (programming assignments), including optional project
+- 20% mid-term exam
+- 20% final exam
+- 10% paper question answers and your own questions about papers
+
+## Course Prerequisites
+- http://web.mit.edu/6.033/www/index.shtml (operating systems, networking, distributed systems, and security)
+- https://pdos.csail.mit.edu/6.828/2022/schedule.html (Operating Systems Engineering)
+
+## Lab Prerequisites
 - https://blog.josejg.com/debugging-pretty/
 - https://pdos.csail.mit.edu/6.824/labs/guidance.html
 
@@ -22,14 +33,3 @@
     - Figure 2 is, in reality, a formal specification, where every clause is a MUST, not a SHOULD.
 
 ![Raft Figure 2](./docs/raft_figure_2.png "Raft Figure 2")
-
-## Grading
-Final course grades will be based on:
-- 50% labs (programming assignments), including optional project
-- 20% mid-term exam
-- 20% final exam
-- 10% paper question answers and your own questions about papers
-
-## Prerequisites
-- http://web.mit.edu/6.033/www/index.shtml (operating systems, networking, distributed systems, and security)
-- https://pdos.csail.mit.edu/6.828/2022/schedule.html (Operating Systems Engineering)

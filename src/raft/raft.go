@@ -21,6 +21,7 @@ import (
 	//	"bytes"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	//	"6.824/labgob"
 	"6.824/labrpc"
@@ -64,16 +65,18 @@ type Raft struct {
 	// state a Raft server must maintain.
 
 	// --- persisted state ---
-	// do we need to store this??
-	isleader bool
 	// latest term server has seen (initialized to 0 on first boot, increases monotonically)
 	currentTerm int
 	// candidateId that received vote in current term (or null if none)
 	votedFor string
 	// log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
-	log []string
+	log []Log
 
 	// --- volatile state ---
+	// do we need to store this??
+	lastElectionHeartbeat time.Time
+	peerState             PeerState
+	quorum                int
 	// index of highest log entry known to be committed (initialized to 0, increases monotonically)
 	commitIndex int
 	// index of highest log entry applied to state machine (initialized to 0, increases monotonically)
@@ -84,10 +87,28 @@ type Raft struct {
 	matchIndex []int
 }
 
+type Log struct {
+	command interface{}
+	term    int
+	index   int
+}
+
+type PeerState int
+
+const (
+	Candidate PeerState = 0
+	Follower            = 1
+	Leader              = 2
+)
+
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	return rf.term, rf.isleader
+	return rf.currentTerm, rf.isleader()
+}
+
+func (rf *Raft) isleader() bool {
+	return rf.peerState == Leader
 }
 
 //
@@ -154,6 +175,10 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	term         int // candidate’s term
+	candidateId  int // candidate requesting vote
+	lastLogIndex int // index of candidate’s last log entry
+	lastLogTerm  int // term of candidate’s last log entry
 }
 
 //
@@ -162,6 +187,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	term        int  // currentTerm, for candidate to update itself
+	voteGranted bool // true means candidate received vote
 }
 
 //
@@ -169,6 +196,7 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+
 }
 
 //
@@ -221,10 +249,12 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
-	term := rf.currentTerm
-	isLeader := rf.isleader
+	term := -1
+	isLeader := false
 
 	// Your code here (2B).
+
+	// apply command to applyCh
 
 	return index, term, isLeader
 }
@@ -253,34 +283,91 @@ func (rf *Raft) killed() bool {
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
+	if rf.killed() == false {
 
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
 
+		// • If election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate:
+		// convert to candidate
+
+		rf.peerState = Candidate
+
+		if time.Now().Sub(rf.lastElectionHeartbeat) > 1000*time.Millisecond {
+			result := rf.performElection()
+
+			if result {
+				rf.peerState = Leader
+			} else {
+				rf.peerState = Follower
+			}
+		}
 	}
 }
 
-//
-// the service or tester wants to create a Raft server. the ports
-// of all the Raft servers (including this one) are in peers[]. this
-// server's port is peers[me]. all the servers' peers[] arrays
-// have the same order. persister is a place for this server to
-// save its persistent state, and also initially holds the most
-// recent saved state, if any. applyCh is a channel on which the
-// tester or service expects Raft to send ApplyMsg messages.
-// Make() must return quickly, so it should start goroutines
-// for any long-running work.
-//
+func (rf *Raft) performElection() bool {
+	votes := 0
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			votes += 1
+			continue
+		}
+
+		var request RequestVoteArgs
+		request.term = rf.currentTerm
+		request.candidateId = rf.me
+
+		if len(rf.log) > 0 {
+			request.lastLogIndex = rf.log[len(rf.log)-1].index
+			request.lastLogTerm = rf.log[len(rf.log)-1].term
+		} else {
+			request.lastLogIndex = -1
+			request.lastLogTerm = -1
+		}
+
+		var reply RequestVoteReply
+		rf.sendRequestVote(i, &request, &reply)
+
+		if reply.voteGranted {
+			votes += 1
+		}
+	}
+
+	if votes > rf.quorum {
+		return true
+	} else {
+		return false
+	}
+}
+
+// the service or tester wants to create a Raft server.
+// the ports of all the Raft servers (including this one) are in peers[].
+// this server's port is peers[me].
+// all the servers' peers[] arrays have the same order.
+
+// persister is a place for this server to save its persistent state,
+// and also initially holds the most recent saved state, if any.
+
+// applyCh is a channel on which the tester or service expects Raft to send ApplyMsg messages.
+
+// Make() must return quickly, so it should start goroutines for any long-running work.
+
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
+	rf.quorum = (len(peers) / 2) + 1
 	rf.persister = persister
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.commitIndex = -1
+	rf.currentTerm = 0
+	// rf.log = []string{}
+	rf.lastElectionHeartbeat = time.Now()
+	// starts off as follower
+	rf.peerState = Follower
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

@@ -201,6 +201,9 @@ type RequestVoteReply struct {
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	if rf.currentTerm < args.Term {
 		rf.updateTerm(args.Term)
 	}
@@ -283,6 +286,9 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	// reset election timer
 	rf.electionTimer = time.Now()
 	// log.Printf("%v --- received heartbeat --- %v", rf.me, rf.electionTimer)
@@ -333,9 +339,7 @@ func (rf *Raft) sendHeartbeats() {
 
 		wg.Add(1)
 
-		go func(server int, mu *sync.Mutex) {
-			mu.Lock()
-			defer mu.Unlock()
+		go func(server int) {
 			var request AppendEntriesArgs
 			request.Term = rf.currentTerm
 			request.LeaderId = rf.me
@@ -348,7 +352,7 @@ func (rf *Raft) sendHeartbeats() {
 			rf.sendAppendEntries(server, &request, &reply)
 			wg.Done()
 			// log.Printf("%v sendAppendEntries %v, %v, %v", rf.me, i, &request, &reply)
-		}(i, &rf.mu)
+		}(i)
 	}
 
 	// wait for all RPCs
@@ -419,12 +423,12 @@ func (rf *Raft) ticker() {
 				// On conversion to candidate, start election.
 				// TODO: If AppendEntries RPC received from new leader: convert to follower
 				// TODO: If election timeout elapses: start new election
-				result := rf.performElection(rf.currentTerm)
+				result := rf.performElection(rf.currentTerm + 1)
 
 				// If votes received from majority of servers: become leader
 				if result {
 					rf.peerState = Leader
-					log.Printf("------- %v is now the leader !!! -------", rf.me)
+					log.Printf("------- %v won election for term %v !!! -------", rf.me, rf.currentTerm)
 					rf.sendHeartbeats()
 				} else {
 					rf.peerState = Follower
@@ -447,7 +451,8 @@ func (rf *Raft) performElection(term int) bool {
 	rf.electionTimer = time.Now()
 
 	var wg sync.WaitGroup
-	votes := 0
+	votesGranted := 0
+	totalVotes := 0
 
 	// sleep for random time
 	ms := (rand.Int() % 50)
@@ -459,12 +464,13 @@ func (rf *Raft) performElection(term int) bool {
 	for i := 0; i < len(rf.peers); i++ {
 		wg.Add(1)
 		go func(server int, mu *sync.Mutex) {
-			mu.Lock()
-			defer mu.Unlock()
-
 			if server == rf.me {
+				mu.Lock()
 				rf.votedFor = rf.me
-				votes += 1
+				votesGranted += 1
+				totalVotes += 1
+				mu.Unlock()
+				wg.Done()
 				return
 			}
 
@@ -482,19 +488,27 @@ func (rf *Raft) performElection(term int) bool {
 
 			var reply RequestVoteReply
 			rf.sendRequestVote(server, &request, &reply)
-			// log.Printf("%v sendRequestVote %v, %v, %v", rf.me, server, &request, &reply)
+			log.Printf("%v sendRequestVote %v, %v, %v", rf.me, server, &request, &reply)
 
+			mu.Lock()
+			totalVotes += 1
 			if reply.VoteGranted {
-				votes += 1
+				votesGranted += 1
 			}
+			mu.Unlock()
 			wg.Done()
+
 		}(i, &rf.mu)
 	}
 
 	// wait for all RPCs to finish
 	wg.Wait()
 
-	if votes > rf.quorum {
+	// if totalVotes < len(rf.peers) {
+	// 	log.Printf("%v got %v out of %v votes", rf.me, totalVotes, len(rf.peers))
+	// }
+
+	if votesGranted > rf.quorum {
 		return true
 	} else {
 		return false

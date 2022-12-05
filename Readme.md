@@ -17,9 +17,9 @@ Final course grades will be based on:
 - https://pdos.csail.mit.edu/6.828/2022/schedule.html (Operating Systems Engineering)
 
 ## Lab Prerequisites
-- https://blog.josejg.com/debugging-pretty/
 - https://pdos.csail.mit.edu/6.824/labs/guidance.html
-
+- Debugging distributed systems: https://blog.josejg.com/debugging-pretty/
+- Lecture 5: Go, Threads, and Raft: https://www.youtube.com/watch?v=UzzcUS2OHqo
 
 ## Lab 1: Map Reduce
 - https://pdos.csail.mit.edu/6.824/labs/lab-mr.html

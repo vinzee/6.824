@@ -114,8 +114,8 @@ func (rf *Raft) isleader() bool {
 	return rf.peerState == Leader
 }
 
-func (rf *Raft) resetTerm(term int) {
-	log.Printf("%v reseting term to %v", rf.me, term)
+func (rf *Raft) updateTerm(term int) {
+	log.Printf("%v update term to %v", rf.me, term)
 	rf.votedFor = -1
 	rf.currentTerm = term
 }
@@ -201,9 +201,9 @@ type RequestVoteReply struct {
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// if rf.currentTerm < args.Term {
-	// 	rf.resetTerm(args.Term)
-	// }
+	if rf.currentTerm < args.Term {
+		rf.updateTerm(args.Term)
+	}
 
 	reply.Term = rf.currentTerm
 
@@ -217,7 +217,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 2. If votedFor is null or candidateId, and candidate’s log is at
 	// least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
-		log.Printf("%v RequestVote: denying vote due to voting already done %v %v", rf.me, rf.votedFor, args)
+		log.Printf("%v RequestVote: denying vote because node already voted for %v. %v", rf.me, rf.votedFor, args)
 		reply.VoteGranted = false
 		return
 	}
@@ -285,10 +285,11 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// reset election timer
 	rf.electionTimer = time.Now()
+	// log.Printf("%v --- received heartbeat --- %v", rf.me, rf.electionTimer)
 
-	// if rf.currentTerm < args.Term {
-	// 	rf.resetTerm(args.Term)
-	// }
+	if rf.currentTerm < args.Term {
+		rf.updateTerm(args.Term)
+	}
 
 	reply.Term = rf.currentTerm
 
@@ -323,23 +324,35 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 func (rf *Raft) sendHeartbeats() {
+	var wg sync.WaitGroup
+
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
 
-		var request AppendEntriesArgs
-		request.Term = rf.currentTerm
-		request.LeaderId = rf.me
-		// request.Entries = []
-		request.PrevLogIndex = rf.commitIndex
-		request.PrevLogTerm = rf.currentTerm
+		wg.Add(1)
 
-		var reply AppendEntriesReply
+		go func(server int, mu *sync.Mutex) {
+			mu.Lock()
+			defer mu.Unlock()
+			var request AppendEntriesArgs
+			request.Term = rf.currentTerm
+			request.LeaderId = rf.me
+			// request.Entries = []
+			request.PrevLogIndex = rf.commitIndex
+			request.PrevLogTerm = rf.currentTerm
 
-		rf.sendAppendEntries(i, &request, &reply)
-		// log.Printf("%v sendAppendEntries %v, %v, %v", rf.me, i, &request, &reply)
+			var reply AppendEntriesReply
+
+			rf.sendAppendEntries(server, &request, &reply)
+			wg.Done()
+			// log.Printf("%v sendAppendEntries %v, %v, %v", rf.me, i, &request, &reply)
+		}(i, &rf.mu)
 	}
+
+	// wait for all RPCs
+	wg.Wait()
 }
 
 //
@@ -399,20 +412,19 @@ func (rf *Raft) ticker() {
 		// • If election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate:
 		// convert to candidate
 		if rf.peerState == Follower || rf.peerState == Candidate {
+			// log.Printf("%v checking election timer: %v", rf.me, rf.electionTimer)
 			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
-				// sleep for random time
-				ms := (rand.Int() % 27)
-				time.Sleep(time.Duration(ms) * time.Millisecond)
-
+				log.Printf("%v term %v election timer expired! %v", rf.me, rf.currentTerm, rf.electionTimer)
 				rf.peerState = Candidate
 				// On conversion to candidate, start election.
 				// TODO: If AppendEntries RPC received from new leader: convert to follower
 				// TODO: If election timeout elapses: start new election
-				result := rf.performElection()
+				result := rf.performElection(rf.currentTerm)
 
 				// If votes received from majority of servers: become leader
 				if result {
 					rf.peerState = Leader
+					log.Printf("------- %v is now the leader !!! -------", rf.me)
 					rf.sendHeartbeats()
 				} else {
 					rf.peerState = Follower
@@ -430,40 +442,57 @@ func (rf *Raft) ticker() {
 // • Vote for self
 // • Reset election timer
 // • Send RequestVote RPCs to all other servers
-func (rf *Raft) performElection() bool {
-	log.Printf("%v performElection start ", rf.me)
-
-	rf.currentTerm += 1
-	rf.votedFor = rf.me
+func (rf *Raft) performElection(term int) bool {
+	rf.currentTerm = term
 	rf.electionTimer = time.Now()
 
+	var wg sync.WaitGroup
 	votes := 0
+
+	// sleep for random time
+	ms := (rand.Int() % 50)
+	log.Printf("%v sleeping for %v", rf.me, ms)
+	time.Sleep(time.Duration(ms) * time.Millisecond)
+
+	log.Printf("%v performing election for term: %v ", rf.me, rf.currentTerm)
+
 	for i := 0; i < len(rf.peers); i++ {
-		if i == rf.me {
-			votes += 1
-			continue
-		}
+		wg.Add(1)
+		go func(server int, mu *sync.Mutex) {
+			mu.Lock()
+			defer mu.Unlock()
 
-		var request RequestVoteArgs
-		request.Term = rf.currentTerm
-		request.CandidateId = rf.me
+			if server == rf.me {
+				rf.votedFor = rf.me
+				votes += 1
+				return
+			}
 
-		if len(rf.log) > 0 {
-			request.LastLogIndex = rf.log[len(rf.log)-1].Index
-			request.LastLogTerm = rf.log[len(rf.log)-1].Term
-		} else {
-			request.LastLogIndex = -1
-			request.LastLogTerm = -1
-		}
+			var request RequestVoteArgs
+			request.Term = rf.currentTerm
+			request.CandidateId = rf.me
 
-		var reply RequestVoteReply
-		rf.sendRequestVote(i, &request, &reply)
-		log.Printf("%v sendRequestVote %v, %v, %v", rf.me, i, &request, &reply)
+			if len(rf.log) > 0 {
+				request.LastLogIndex = rf.log[len(rf.log)-1].Index
+				request.LastLogTerm = rf.log[len(rf.log)-1].Term
+			} else {
+				request.LastLogIndex = -1
+				request.LastLogTerm = -1
+			}
 
-		if reply.VoteGranted {
-			votes += 1
-		}
+			var reply RequestVoteReply
+			rf.sendRequestVote(server, &request, &reply)
+			// log.Printf("%v sendRequestVote %v, %v, %v", rf.me, server, &request, &reply)
+
+			if reply.VoteGranted {
+				votes += 1
+			}
+			wg.Done()
+		}(i, &rf.mu)
 	}
+
+	// wait for all RPCs to finish
+	wg.Wait()
 
 	if votes > rf.quorum {
 		return true
@@ -498,7 +527,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.currentTerm = 0
 	// rf.log = []string{}
-	rf.electionTimer = time.Now()
+	rf.electionTimer = time.Now().Add(-1 * time.Minute)
 	// starts off as follower
 	rf.peerState = Follower
 

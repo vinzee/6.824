@@ -385,7 +385,7 @@ func (cfg *config) connect(i int) {
 
 // detach server i from the net.
 func (cfg *config) disconnect(i int) {
-	// fmt.Printf("disconnect(%d)\n", i)
+	fmt.Printf(Red+"---Disconnect(%d)---\n"+Reset, i)
 
 	cfg.connected[i] = false
 

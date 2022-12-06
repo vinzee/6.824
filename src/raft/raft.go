@@ -78,7 +78,7 @@ type Raft struct {
 	// do we need to store this??
 	electionTimer  time.Time
 	heartbeatTimer time.Time
-	peerState      PeerState
+	state          state
 	quorum         int
 	// index of highest log entry known to be committed (initialized to 0, increases monotonically)
 	commitIndex int
@@ -96,12 +96,12 @@ type Log struct {
 	Index   int
 }
 
-type PeerState int
+type state int
 
 const (
-	Candidate PeerState = 0
-	Follower  PeerState = 1
-	Leader    PeerState = 2
+	Candidate state = 0
+	Follower  state = 1
+	Leader    state = 2
 )
 
 // return currentTerm and whether this server
@@ -111,7 +111,7 @@ func (rf *Raft) GetState() (int, bool) {
 }
 
 func (rf *Raft) isleader() bool {
-	return rf.peerState == Leader
+	return rf.state == Leader
 }
 
 func (rf *Raft) updateTerm(term int) {
@@ -332,6 +332,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) sendHeartbeats() {
 	cond := sync.NewCond(&rf.mu)
 	successCount := 1
+	// PrintfInfo("%v sending heartbeats to all", rf.me)
 
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
@@ -410,6 +411,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	PrintfError("%v got killed", rf.me)
 }
 
 func (rf *Raft) killed() bool {
@@ -421,36 +423,34 @@ func (rf *Raft) killed() bool {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-		// PrintfDebug("%v ticker: %d", rf.me, rf.peerState)
+		// PrintfDebug("%v ticker: %d", rf.me, rf.state)
 
 		// • If election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate:
 		// convert to candidate
-		if rf.peerState == Follower || rf.peerState == Candidate {
+		if rf.state == Follower || rf.state == Candidate {
 			// PrintfDebug("%v checking election timer: %v", rf.me, rf.electionTimer)
 			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
-				PrintfWarn("%v term %v election timer expired, will attempt election soon...electionTimer: %v", rf.me, rf.currentTerm, time.Since(rf.electionTimer))
+				PrintfWarn("%v term %v election timer expired, will attempt election soon...electionTimer: %v", rf.me, rf.currentTerm, rf.electionTimer)
 				rf.mu.Lock()
-				rf.peerState = Candidate
+				rf.state = Candidate
 				rf.electionTimer = time.Now()
 				rf.mu.Unlock()
 
 				go rf.attemptElection(rf.currentTerm + 1)
 			}
-		} else if rf.peerState == Leader {
+		} else if rf.state == Leader {
 			if time.Since(rf.heartbeatTimer) > 100*time.Millisecond {
 				go rf.sendHeartbeats()
 			}
-			// if time.Since(rf.electionTimer) > 1000*time.Millisecond {
-			// 	// downgrade leadership
-			// 	PrintfError("%v Downgrading to Follower status as electionTimer has expired", rf.me)
-			// 	rf.mu.Lock()
-			// 	rf.peerState = Follower
-			// 	rf.mu.Unlock()
-			// }
+			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
+				// downgrade leadership
+				PrintfError("%v Downgrading to Follower status as electionTimer has expired", rf.me)
+				rf.mu.Lock()
+				rf.state = Follower
+				rf.mu.Unlock()
+			}
 		}
 	}
-
-	PrintfError("%v got killed", rf.me)
 }
 
 // • Increment currentTerm
@@ -516,18 +516,23 @@ func (rf *Raft) attemptElection(term int) {
 
 	rf.mu.Lock()
 	// wait till we get all votes
-	for votesTotal < len(rf.peers) {
+	for votesGranted < rf.quorum && votesTotal < len(rf.peers) {
 		cond.Wait()
+	}
+
+	if rf.state != Candidate || rf.currentTerm != term {
+		PrintfWarn("%v ignoring voting result as state or term has changed", rf.me)
+		return
 	}
 
 	// If votes received from majority of servers: become leader
 	if votesGranted >= rf.quorum {
-		rf.peerState = Leader
+		rf.state = Leader
 		PrintfSuccess("------- %v won election for term %v -------", rf.me, rf.currentTerm)
 		go rf.sendHeartbeats()
 	} else {
 		PrintfError("------- %v lost election for term %v -------", rf.me, rf.currentTerm)
-		rf.peerState = Follower
+		rf.state = Follower
 	}
 	rf.mu.Unlock()
 }
@@ -560,7 +565,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// rf.log = []string{}
 	rf.electionTimer = time.Now().Add(-1 * time.Minute)
 	// starts off as follower
-	rf.peerState = Follower
+	rf.state = Follower
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

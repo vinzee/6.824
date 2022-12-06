@@ -107,7 +107,15 @@ const (
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	return rf.currentTerm, rf.isleader()
+	var term int
+	var isleader bool
+
+	rf.mu.Lock()
+	term = rf.currentTerm
+	isleader = rf.isleader()
+	rf.mu.Unlock()
+
+	return term, isleader
 }
 
 func (rf *Raft) isleader() bool {
@@ -115,10 +123,12 @@ func (rf *Raft) isleader() bool {
 }
 
 func (rf *Raft) downgradeToFollowerState(term int, reason string) {
+	// rf.mu.Lock()
 	PrintfWarn("%v Downgrading to follower state for term %v. reason: %v", rf.me, term, reason)
 	rf.votedFor = -1
 	rf.currentTerm = term
 	rf.state = Follower
+	// rf.mu.Unlock()
 }
 
 //
@@ -325,7 +335,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	rf.heartbeatTimer = time.Now()
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
@@ -341,6 +350,7 @@ func (rf *Raft) sendHeartbeats() {
 		}
 
 		go func(server int, mu *sync.Mutex) {
+			mu.Lock()
 			request := AppendEntriesArgs{
 				Term:     rf.currentTerm,
 				LeaderId: rf.me,
@@ -348,6 +358,7 @@ func (rf *Raft) sendHeartbeats() {
 				PrevLogIndex: rf.commitIndex,
 				PrevLogTerm:  rf.currentTerm,
 			}
+			mu.Unlock()
 			var reply AppendEntriesReply
 
 			rf.sendAppendEntries(server, &request, &reply)
@@ -429,28 +440,29 @@ func (rf *Raft) ticker() {
 
 		// • If election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate:
 		// convert to candidate
+		rf.mu.Lock()
 		if rf.state == Follower {
 			// PrintfDebug("%v checking election timer: %v", rf.me, rf.electionTimer)
 			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
 				PrintfWarn("%v term %v election timer expired, will attempt election soon...", rf.me, rf.currentTerm)
-				rf.mu.Lock()
+				// rf.mu.Lock()
 				rf.state = Candidate
 				rf.electionTimer = time.Now()
-				rf.mu.Unlock()
+				// rf.mu.Unlock()
 
 				go rf.attemptElection(rf.currentTerm + 1)
 			}
 		} else if rf.state == Leader {
 			if time.Since(rf.heartbeatTimer) > 100*time.Millisecond {
+				rf.heartbeatTimer = time.Now()
 				go rf.sendHeartbeats()
 			}
 			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
 				// downgrade leadership
-				rf.mu.Lock()
 				rf.downgradeToFollowerState(rf.currentTerm, "electionTimer has expired")
-				rf.mu.Unlock()
 			}
 		}
+		rf.mu.Unlock()
 	}
 }
 
@@ -516,10 +528,10 @@ func (rf *Raft) attemptElection(term int) {
 			if reply.VoteGranted {
 				votesGranted += 1
 			}
+			PrintfInfo("%v received vote for term %v from %v. result: %v. votesGranted: %v", rf.me, request.Term, server, reply.VoteGranted, votesGranted)
 			cond.Broadcast()
 			mu.Unlock()
 
-			PrintfInfo("%v received vote for term %v from %v. result: %v. votesGranted: %v", rf.me, request.Term, server, reply.VoteGranted, votesGranted)
 		}(i, &rf.mu)
 	}
 

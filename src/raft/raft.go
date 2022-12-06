@@ -96,12 +96,12 @@ type Log struct {
 	Index   int
 }
 
-type state int
+type state string
 
 const (
-	Candidate state = 0
-	Follower  state = 1
-	Leader    state = 2
+	Candidate state = "Candidate"
+	Follower  state = "Follower"
+	Leader    state = "Leader"
 )
 
 // return currentTerm and whether this server
@@ -114,10 +114,11 @@ func (rf *Raft) isleader() bool {
 	return rf.state == Leader
 }
 
-func (rf *Raft) updateTerm(term int) {
-	// PrintfWarn("%v updating term to %v", rf.me, term)
+func (rf *Raft) downgradeToFollowerState(term int, reason string) {
+	PrintfWarn("%v Downgrading to follower state for term %v. reason: %v", rf.me, term, reason)
 	rf.votedFor = -1
 	rf.currentTerm = term
+	rf.state = Follower
 }
 
 //
@@ -204,8 +205,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.currentTerm < args.Term {
-		rf.updateTerm(args.Term)
+	if args.Term > rf.currentTerm {
+		rf.downgradeToFollowerState(args.Term, "stale term")
 	}
 
 	reply.Term = rf.currentTerm
@@ -293,8 +294,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.electionTimer = time.Now()
 	// PrintfInfo("%v received heartbeat from %v", rf.me, args.LeaderId)
 
-	if rf.currentTerm < args.Term {
-		rf.updateTerm(args.Term)
+	if args.Term > rf.currentTerm {
+		rf.downgradeToFollowerState(args.Term, "stale term")
 	}
 
 	reply.Term = rf.currentTerm
@@ -364,10 +365,11 @@ func (rf *Raft) sendHeartbeats() {
 
 	// wait for all RPCs
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	for successCount < len(rf.peers) {
 		cond.Wait()
 	}
-	rf.mu.Unlock()
+
 }
 
 //
@@ -427,10 +429,10 @@ func (rf *Raft) ticker() {
 
 		// • If election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate:
 		// convert to candidate
-		if rf.state == Follower || rf.state == Candidate {
+		if rf.state == Follower {
 			// PrintfDebug("%v checking election timer: %v", rf.me, rf.electionTimer)
 			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
-				PrintfWarn("%v term %v election timer expired, will attempt election soon...electionTimer: %v", rf.me, rf.currentTerm, rf.electionTimer)
+				PrintfWarn("%v term %v election timer expired, will attempt election soon...", rf.me, rf.currentTerm)
 				rf.mu.Lock()
 				rf.state = Candidate
 				rf.electionTimer = time.Now()
@@ -444,9 +446,8 @@ func (rf *Raft) ticker() {
 			}
 			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
 				// downgrade leadership
-				PrintfError("%v Downgrading to Follower status as electionTimer has expired", rf.me)
 				rf.mu.Lock()
-				rf.state = Follower
+				rf.downgradeToFollowerState(rf.currentTerm, "electionTimer has expired")
 				rf.mu.Unlock()
 			}
 		}
@@ -460,8 +461,16 @@ func (rf *Raft) ticker() {
 func (rf *Raft) attemptElection(term int) {
 	// sleep for random time
 	ms := (rand.Int() % 50)
-	PrintfInfo("%v sleeping for %v", rf.me, ms)
+	// PrintfInfo("%v sleeping for %v", rf.me, ms)
 	time.Sleep(time.Duration(ms) * time.Millisecond)
+
+	rf.mu.Lock()
+	currentState := rf.state
+	rf.mu.Unlock()
+	if currentState != Candidate {
+		PrintfWarn("%v Skipping election as state has changed to %v", rf.me, currentState)
+		return
+	}
 
 	PrintfInfo("%v attempting election for term: %v ", rf.me, term)
 
@@ -510,11 +519,12 @@ func (rf *Raft) attemptElection(term int) {
 			cond.Broadcast()
 			mu.Unlock()
 
-			PrintfInfo("%v sendRequestVote %v, %v, %v. votesGranted: %v", rf.me, server, &request, &reply, votesGranted)
+			PrintfInfo("%v received vote for term %v from %v. result: %v. votesGranted: %v", rf.me, request.Term, server, reply.VoteGranted, votesGranted)
 		}(i, &rf.mu)
 	}
 
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	// wait till we get all votes
 	for votesGranted < rf.quorum && votesTotal < len(rf.peers) {
 		cond.Wait()
@@ -526,15 +536,15 @@ func (rf *Raft) attemptElection(term int) {
 	}
 
 	// If votes received from majority of servers: become leader
+	// else, retry election
 	if votesGranted >= rf.quorum {
 		rf.state = Leader
 		PrintfSuccess("------- %v won election for term %v -------", rf.me, rf.currentTerm)
 		go rf.sendHeartbeats()
 	} else {
-		PrintfError("------- %v lost election for term %v -------", rf.me, rf.currentTerm)
-		rf.state = Follower
+		PrintfError("------- %v lost election for term %v. will retry for term %v -------", rf.me, rf.currentTerm, rf.currentTerm+1)
+		go rf.attemptElection(rf.currentTerm + 1)
 	}
-	rf.mu.Unlock()
 }
 
 // the service or tester wants to create a Raft server.

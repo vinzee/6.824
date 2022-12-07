@@ -31,5 +31,9 @@ Final course grades will be based on:
 - https://thesquareplanet.com/blog/students-guide-to-raft/
 - https://thesquareplanet.com/blog/instructors-guide-to-raft/
     - Figure 2 is, in reality, a formal specification, where every clause is a MUST, not a SHOULD.
+- Reference Implamentation: https://github.com/ongardie/raftscope/blob/master/raft.js
+- `go test -run 2A -race`
+- `$ for i in {0..10}; do go test; done`
+
 
 ![Raft Figure 2](./docs/raft_figure_2.png "Raft Figure 2")

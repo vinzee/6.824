@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -121,6 +122,16 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isleader
 }
 
+// Update Leader's election timer if it win's atleast 1 vote
+// Update election timer once peer becomes a candidate
+
+// Update follower's election timer if:
+// 1. Vote is granted to a candidate in a RequestVote RPC call.
+// 2. AppendEntries RPC has the same or greater term.
+func (rf *Raft) updateElectionTimer() {
+	rf.electionTimer = time.Now()
+}
+
 func (rf *Raft) isleader() bool {
 	return rf.state == Leader
 }
@@ -134,7 +145,7 @@ func (rf *Raft) logTerm(index int) int {
 }
 
 func (rf *Raft) stepDown(term int, reason string) {
-	PrintfWarn("%v Stepping down follower state for term %v. reason: %v", rf.me, term, reason)
+	PrintfWarn("%v Stepping down to follower for term %v. reason: %v", rf.me, term, reason)
 	rf.votedFor = -1
 	rf.currentTerm = term
 	rf.state = Follower
@@ -224,9 +235,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if args.Term > rf.currentTerm {
-		rf.stepDown(args.Term, "stale term")
-	}
+	// if args.Term > rf.currentTerm {
+	// 	rf.stepDown(args.Term, "detected stale term in RequestVote")
+	// }
 
 	reply.Term = rf.currentTerm
 
@@ -237,22 +248,27 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	// 2. If votedFor is null or candidateId, and candidate’s log is at
-	// least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
+	// Reject voke if receiver has already voted in this term
 	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
 		// PrintfInfo("%v RequestVote: denying vote because node already voted for %v. %v", rf.me, rf.votedFor, args)
 		reply.VoteGranted = false
 		return
 	}
 
+	// Reject voke if candidate’s log is stale
 	if rf.lastApplied > 0 && rf.log[rf.lastApplied].Index > args.LastLogIndex && rf.logTerm(rf.lastApplied) > args.LastLogTerm {
 		// PrintfInfo("%v RequestVote: denying vote due to stale logs %v", rf.me, args)
 		reply.VoteGranted = false
 		return
 	}
 
+	// 2. If votedFor is null or candidateId, and candidate’s log is at
+	// least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 	rf.votedFor = args.CandidateId
 	reply.VoteGranted = true
+
+	// UpdateElectionTimer if vote is granted to a candidate in a RequestVote RPC call.
+	rf.updateElectionTimer()
 
 	// PrintfInfo("%v RequestVote: %v", rf.me, reply)
 }
@@ -309,12 +325,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	// reset election timer
-	rf.electionTimer = time.Now()
 	// PrintfInfo("%v received heartbeat from %v", rf.me, args.LeaderId)
 
 	if args.Term > rf.currentTerm {
-		rf.stepDown(args.Term, "stale term")
+		rf.stepDown(args.Term, fmt.Sprintf("detected stale term from AppendEntries (%v is already the leader)", args.LeaderId))
 	}
 
 	reply.Term = rf.currentTerm
@@ -324,6 +338,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
+
+	// Update election timer if RPC has the same or greater term.
+	rf.updateElectionTimer()
 
 	// 2. Reply false if log doesn’t contain an entry at PrevLogIndex
 	// whose term matches PrevLogTerm (§5.3)
@@ -410,14 +427,12 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 			totalCount += 1
 
 			if rf.currentTerm < reply.Term {
-				rf.stepDown(reply.Term, "stale term detected")
+				rf.stepDown(reply.Term, "detected stale term from AppendEntries.Reply")
 			}
 
 			if rf.state == Leader && rf.currentTerm < reply.Term {
 				if reply.Success {
 					successCount += 1
-					rf.electionTimer = time.Now()
-
 					// If successful: update nextIndex and matchIndex for follower (§5.3)
 					rf.matchIndex[server] += len(entries)
 					rf.nextIndex[server] += len(entries)
@@ -550,15 +565,16 @@ func (rf *Raft) ticker() {
 			// PrintfDebug("%v checking election timer: %v", rf.me, rf.electionTimer)
 			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
 				PrintfWarn("%v term %v election timer expired, will attempt election soon...", rf.me, rf.currentTerm)
-				// rf.mu.Lock()
 				rf.state = Candidate
-				rf.electionTimer = time.Now()
-				// rf.mu.Unlock()
+				// Update election timer once peer becomes a candidate
+				rf.updateElectionTimer()
 
 				go rf.attemptElection(rf.currentTerm + 1)
 			}
 		} else if rf.state == Leader {
 			if time.Since(rf.heartbeatTimer) > 100*time.Millisecond {
+				// Update election timer before sending heartbeat
+				rf.updateElectionTimer()
 				go rf.sendAppendEntriesToAllPeers()
 			}
 			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
@@ -584,7 +600,7 @@ func (rf *Raft) attemptElection(term int) {
 	currentState := rf.state
 	rf.mu.Unlock()
 	if currentState != Candidate {
-		PrintfWarn("%v Skipping election as state has changed to %v", rf.me, currentState)
+		// PrintfWarn("%v Skipping election as state has changed to %v", rf.me, currentState)
 		return
 	}
 
@@ -626,7 +642,7 @@ func (rf *Raft) attemptElection(term int) {
 			if reply.VoteGranted {
 				votesGranted += 1
 			}
-			PrintfInfo("%v received vote for term %v from %v. result: %v. votesGranted: %v", rf.me, request.Term, server, reply.VoteGranted, votesGranted)
+			PrintfInfo("%v received vote for term %v from %v. result: %v. votesGranted: %v", rf.me, request.Term, server, reply, votesGranted)
 			cond.Broadcast()
 			mu.Unlock()
 

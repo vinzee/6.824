@@ -232,6 +232,7 @@ type RequestVoteReply struct {
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	// PrintfPurple("%v RequestVote received for CandidateId:%v for Term: %v", rf.me, args.CandidateId, args.Term)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -243,21 +244,21 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
-		// PrintfInfo("%v RequestVote: denying vote due to stale term %v", rf.me, args)
+		PrintfWarn("%v RequestVote: denying vote to %v due to stale term %v", rf.me, args.CandidateId, args.Term)
 		reply.VoteGranted = false
 		return
 	}
 
 	// Reject voke if receiver has already voted in this term
 	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
-		// PrintfInfo("%v RequestVote: denying vote because node already voted for %v. %v", rf.me, rf.votedFor, args)
+		PrintfWarn("%v RequestVote: denying vote to %v because receiver already voted for %v.", rf.me, args.CandidateId, rf.votedFor)
 		reply.VoteGranted = false
 		return
 	}
 
 	// Reject voke if candidate’s log is stale
 	if rf.lastApplied > 0 && rf.log[rf.lastApplied].Index > args.LastLogIndex && rf.logTerm(rf.lastApplied) > args.LastLogTerm {
-		// PrintfInfo("%v RequestVote: denying vote due to stale logs %v", rf.me, args)
+		PrintfWarn("%v RequestVote: denying vote to %v due to stale logs", rf.me, args.CandidateId)
 		reply.VoteGranted = false
 		return
 	}
@@ -303,8 +304,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
+	return rf.peers[server].Call("Raft.RequestVote", args, reply)
 }
 
 type AppendEntriesArgs struct {
@@ -322,10 +322,9 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	// PrintfPurple("%v received AppendEntries from %v", rf.me, args.LeaderId)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	// PrintfInfo("%v received heartbeat from %v", rf.me, args.LeaderId)
 
 	if args.Term > rf.currentTerm {
 		rf.stepDown(args.Term, fmt.Sprintf("detected stale term from AppendEntries (%v is already the leader)", args.LeaderId))
@@ -335,6 +334,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
+		PrintfWarn("%v RequestVote: denying AppendEntries to %v due to stale term %v", rf.me, args.LeaderId, args.Term)
 		reply.Success = false
 		return
 	}
@@ -345,7 +345,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 2. Reply false if log doesn’t contain an entry at PrevLogIndex
 	// whose term matches PrevLogTerm (§5.3)
 	// Very Important Consistency check!
-	if rf.lastIndex <= args.PrevLogIndex || rf.logTerm(rf.lastIndex) != args.PrevLogTerm {
+	if rf.lastIndex > args.PrevLogIndex || rf.logTerm(rf.lastIndex) != args.PrevLogTerm {
+		PrintfWarn("%v RequestVote: denying AppendEntries to %v due to stale logs rf.lastIndex: %v, args.PrevLogIndex: %v", rf.me, args.LeaderId, rf.lastIndex, args.PrevLogIndex)
 		reply.Success = false
 		return
 	}
@@ -406,7 +407,6 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 
 		go func(server int, mu *sync.Mutex) {
 			mu.Lock()
-			rf.heartbeatTimer = time.Now()
 			prevIndex := rf.nextIndex[server] - 1
 			entries := rf.log[prevIndex:rf.lastIndex]
 			request := AppendEntriesArgs{
@@ -420,40 +420,46 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 			mu.Unlock()
 			var reply AppendEntriesReply
 
-			rf.sendAppendEntries(server, &request, &reply)
+			result := rf.sendAppendEntries(server, &request, &reply)
 			// PrintfInfo("%v sendAppendEntries %v, %v, %v", rf.me, server, &request, &reply)
 
 			mu.Lock()
 			totalCount += 1
+			if !result {
+				PrintfWarn("%v sendAppendEntries request to %v failed", rf.me, server)
+			} else {
+				if rf.currentTerm < reply.Term {
+					rf.stepDown(reply.Term, "detected stale term from AppendEntries.Reply")
+				}
 
-			if rf.currentTerm < reply.Term {
-				rf.stepDown(reply.Term, "detected stale term from AppendEntries.Reply")
-			}
+				if rf.state == Leader {
+					if reply.Success {
+						successCount += 1
+						rf.updateElectionTimer()
 
-			if rf.state == Leader && rf.currentTerm < reply.Term {
-				if reply.Success {
-					successCount += 1
-					// If successful: update nextIndex and matchIndex for follower (§5.3)
-					rf.matchIndex[server] += len(entries)
-					rf.nextIndex[server] += len(entries)
-				} else {
-					// If a follower’s log is inconsistent with the leader’s,
-					// the AppendEntries consistency check will fail in the next AppendEntries RPC.
-					// After a rejection, the leader decrements nextIndex and retries the AppendEntries RPC.
-					// Eventually nextIndex will reach a point where the leader and follower logs match.
+						// If successful: update nextIndex and matchIndex for follower (§5.3)
+						rf.matchIndex[server] += len(entries)
+						rf.nextIndex[server] += len(entries)
+					} else {
+						// If a follower’s log is inconsistent with the leader’s,
+						// the AppendEntries consistency check will fail in the next AppendEntries RPC.
+						// After a rejection, the leader decrements nextIndex and retries the AppendEntries RPC.
+						// Eventually nextIndex will reach a point where the leader and follower logs match.
 
-					// When this happens, AppendEntries will succeed, which removes any conflicting entries in the follower’s log
-					// and appends entries from the leader’s log (if any).
+						// When this happens, AppendEntries will succeed, which removes any conflicting entries in the follower’s log
+						// and appends entries from the leader’s log (if any).
 
-					// Once AppendEntries succeeds, the follower’s log is consistent with the leader’s,
-					// and it will remain that way for the rest of the term.
-					if rf.nextIndex[server] > 1 {
-						rf.nextIndex[server]--
+						// Once AppendEntries succeeds, the follower’s log is consistent with the leader’s,
+						// and it will remain that way for the rest of the term.
+						if rf.nextIndex[server] > 1 {
+							rf.nextIndex[server]--
+						}
 					}
 				}
 			}
 			cond.Broadcast()
 			mu.Unlock()
+
 		}(i, &rf.mu)
 	}
 
@@ -509,9 +515,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// If followers crash or run slowly, or if network packets are lost,
 	// the leader retries AppendEntries RPCs indefinitely (even after it has responded to the client)
 	// until all followers eventually store all log entries.
-	result := false
-	for !result {
-		result = rf.sendAppendEntriesToAllPeers()
+	// PrintfInfo("%v sendAppendEntriesToAllPeers 2: %v", rf.me, time.Since(rf.heartbeatTimer))
+	result := rf.sendAppendEntriesToAllPeers()
+
+	if !result {
+		// should we remove the log entry?
+		return -1, currentTerm, true
 	}
 
 	// Step 3: Once the entry has been safely replicated,
@@ -525,9 +534,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		CommandIndex: rf.lastIndex,
 	}
 	rf.applyCh <- applyMsg
-	rf.lastApplied = rf.commitIndex
 
-	return rf.lastIndex, currentTerm, true
+	return rf.commitIndex, currentTerm, true
 }
 
 //
@@ -556,7 +564,7 @@ func (rf *Raft) killed() bool {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-		// PrintfDebug("%v ticker: %d", rf.me, rf.state)
+		// PrintfDebug("%v ticker: %v", rf.me, rf.state)
 
 		// • If election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate:
 		// convert to candidate
@@ -572,9 +580,10 @@ func (rf *Raft) ticker() {
 				go rf.attemptElection(rf.currentTerm + 1)
 			}
 		} else if rf.state == Leader {
-			if time.Since(rf.heartbeatTimer) > 100*time.Millisecond {
+			if time.Since(rf.heartbeatTimer) > 200*time.Millisecond {
 				// Update election timer before sending heartbeat
-				rf.updateElectionTimer()
+				// PrintfInfo("%v sendAppendEntriesToAllPeers: %v", rf.me, time.Since(rf.heartbeatTimer))
+				rf.heartbeatTimer = time.Now()
 				go rf.sendAppendEntriesToAllPeers()
 			}
 			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
@@ -593,14 +602,14 @@ func (rf *Raft) ticker() {
 func (rf *Raft) attemptElection(term int) {
 	// sleep for random time
 	ms := (rand.Int() % 50)
-	// PrintfInfo("%v sleeping for %v", rf.me, ms)
+	PrintfInfo("%v sleeping for %v", rf.me, ms)
 	time.Sleep(time.Duration(ms) * time.Millisecond)
 
 	rf.mu.Lock()
 	currentState := rf.state
 	rf.mu.Unlock()
 	if currentState != Candidate {
-		// PrintfWarn("%v Skipping election as state has changed to %v", rf.me, currentState)
+		PrintfWarn("%v Skipping election as state has changed to %v", rf.me, currentState)
 		return
 	}
 
@@ -611,19 +620,15 @@ func (rf *Raft) attemptElection(term int) {
 	// TODO: If election timeout elapses: start new election
 	rf.mu.Lock()
 	rf.currentTerm = term
+	rf.votedFor = rf.me
+	votesGranted := 1
+	votesTotal := 1
 	rf.mu.Unlock()
 
-	votesGranted := 0
-	votesTotal := 0
 	cond := sync.NewCond(&rf.mu)
 
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
-			rf.mu.Lock()
-			rf.votedFor = rf.me
-			votesGranted += 1
-			votesTotal += 1
-			rf.mu.Unlock()
 			continue
 		}
 
@@ -635,14 +640,19 @@ func (rf *Raft) attemptElection(term int) {
 			request.LastLogTerm = rf.logTerm(rf.lastIndex)
 
 			var reply RequestVoteReply
-			rf.sendRequestVote(server, &request, &reply)
+			// PrintfInfo("%v sendRequestVote for term %v to %v.", rf.me, request.Term, server)
+			result := rf.sendRequestVote(server, &request, &reply)
 
 			mu.Lock()
 			votesTotal += 1
-			if reply.VoteGranted {
-				votesGranted += 1
+			if !result {
+				PrintfWarn("%v sendRequestVote request to %v failed", rf.me, server)
+			} else {
+				if reply.VoteGranted {
+					votesGranted += 1
+				}
+				PrintfInfo("%v received vote for term %v from %v. result: %v. votesGranted: %v", rf.me, request.Term, server, reply, votesGranted)
 			}
-			PrintfInfo("%v received vote for term %v from %v. result: %v. votesGranted: %v", rf.me, request.Term, server, reply, votesGranted)
 			cond.Broadcast()
 			mu.Unlock()
 
@@ -658,6 +668,7 @@ func (rf *Raft) attemptElection(term int) {
 
 	if rf.state != Candidate || rf.currentTerm != term {
 		PrintfWarn("%v ignoring voting result as state or term has changed", rf.me)
+		rf.votedFor = -1
 		return
 	}
 
@@ -676,7 +687,8 @@ func (rf *Raft) attemptElection(term int) {
 		PrintfSuccess("------- %v won election for term %v -------", rf.me, rf.currentTerm)
 		go rf.sendAppendEntriesToAllPeers()
 	} else {
-		PrintfError("------- %v lost election for term %v. will retry for term %v -------", rf.me, rf.currentTerm, rf.currentTerm+1)
+		rf.votedFor = -1
+		PrintfError("------- %v lost election for term %v -------", rf.me, rf.currentTerm)
 		go rf.attemptElection(rf.currentTerm + 1)
 	}
 }
@@ -711,8 +723,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// starts off as follower
 	rf.state = Follower
 	rf.applyCh = applyCh
-	rf.nextIndex = []int{0, 0, 0}
-	rf.matchIndex = []int{0, 0, 0}
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

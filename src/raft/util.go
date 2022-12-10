@@ -5,6 +5,8 @@ import "log"
 // Debugging
 const Debug = true
 
+// const Debug = false
+
 const (
 	Reset  string = "\033[0m"
 	Red           = "\033[31m"
@@ -54,6 +56,13 @@ func PrintfDebug(format string, a ...interface{}) (n int, err error) {
 func PrintfWarn(format string, a ...interface{}) (n int, err error) {
 	if Debug {
 		log.Printf(Yellow+format+Reset, a...)
+	}
+	return
+}
+
+func PrintfPurple(format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		log.Printf(Purple+format+Reset, a...)
 	}
 	return
 }

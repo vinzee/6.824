@@ -86,8 +86,6 @@ type Raft struct {
 	commitIndex int
 	// index of highest log entry applied to state machine (initialized to 0, increases monotonically)
 	lastApplied int
-	// index of highest log entry kwnown to this peer
-	lastIndex int
 
 	// --- volatile state on leaders ---
 	nextIndex  []int
@@ -134,6 +132,10 @@ func (rf *Raft) updateElectionTimer() {
 
 func (rf *Raft) isleader() bool {
 	return rf.state == Leader
+}
+
+func (rf *Raft) lastIndex() int {
+	return len(rf.log) - 1
 }
 
 func (rf *Raft) logTerm(index int) int {
@@ -344,21 +346,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Update election timer if RPC has the same or greater term.
 	rf.updateElectionTimer()
 
-	// 2. Reply false if log doesn’t contain an entry at PrevLogIndex
-	// whose term matches PrevLogTerm (§5.3)
-	// Very Important Consistency check!
-	if rf.lastIndex < args.PrevLogIndex || rf.logTerm(rf.lastIndex) != args.PrevLogTerm {
-		PrintfWarn("%v RequestVote: denying AppendEntries to %v due to stale logs rf.lastIndex: %v, args.PrevLogIndex: %v", rf.me, args.LeaderId, rf.lastIndex, args.PrevLogIndex)
+	// 2. Reply false if log doesn’t contain an entry at PrevLogIndex whose term matches PrevLogTerm (§5.3)
+	// --- Very Important Consistency check! ---
+	// Compare the index and term of the last entries in the logs to determine which of two logs is more up-to-date.
+	// If the logs have last entries with different terms, then the log with the later term is more up-to-date.
+	// If the logs end with the same term, then whichever log is longer is more up-to-date
+	// ---
+	if rf.lastIndex() != args.PrevLogIndex || rf.logTerm(rf.lastIndex()) != args.PrevLogTerm {
+		PrintfWarn("%v RequestVote: denying AppendEntries to %v due to stale logs rf.lastIndex: %v, args.PrevLogIndex: %v", rf.me, args.LeaderId, rf.lastIndex(), args.PrevLogIndex)
 		reply.Success = false
 		return
 	}
-
-	// Raft determines which of two logs is more up-to-date
-	// by comparing the index and term of the last entries in the
-	// logs. If the logs have last entries with different terms, then
-	// the log with the later term is more up-to-date. If the logs
-	// end with the same term, then whichever log is longer is
-	// more up-to-date
 
 	index := args.PrevLogIndex
 
@@ -377,16 +375,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		// 4. Append any new entries not already in the log
 		rf.log = append(rf.log, args.Entries[i])
+		PrintfSuccess("%v append(%v)", rf.me, args.Entries[i])
 	}
 
 	// 5. If leaderCommit > commitIndex, set commitIndex =
 	// min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
-		if args.LeaderCommit < rf.lastIndex {
-			rf.commitIndex = args.LeaderCommit
+		newCommitIndex := rf.commitIndex
+		if args.LeaderCommit < rf.lastIndex() {
+			newCommitIndex = args.LeaderCommit
 		} else {
-			rf.commitIndex = rf.lastIndex
+			newCommitIndex = rf.lastIndex()
 		}
+
+		for i := rf.commitIndex + 1; i <= newCommitIndex; i++ {
+			applyMsg := ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[i].Command,
+				CommandIndex: rf.log[i].Index,
+			}
+			rf.applyCh <- applyMsg
+			rf.commitIndex++
+			PrintfSuccess("%v commited(%v). commitIndex: %v", rf.me, rf.log[i].Command, rf.commitIndex)
+		}
+
+		rf.commitIndex = newCommitIndex
 	}
 
 	reply.Success = true
@@ -409,13 +422,13 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 
 		go func(server int, mu *sync.Mutex) {
 			mu.Lock()
-			prevIndex := rf.nextIndex[server] - 1
-			entries := rf.log[prevIndex:rf.lastIndex]
+			entries := rf.log[rf.nextIndex[server]:]
+			// PrintfInfo("%v before sendAppendEntries %v, %v, %v", rf.me, rf.nextIndex[server], rf.lastIndex()+1, entries)
 			request := AppendEntriesArgs{
 				Term:         rf.currentTerm,
 				LeaderId:     rf.me,
-				PrevLogIndex: prevIndex,             // index of log entry immediately preceding new ones
-				PrevLogTerm:  rf.logTerm(prevIndex), // term of prevLogIndex entry
+				PrevLogIndex: rf.nextIndex[server] - 1,             // index of log entry immediately preceding new ones
+				PrevLogTerm:  rf.logTerm(rf.nextIndex[server] - 1), // term of prevLogIndex entry
 				Entries:      entries,
 				LeaderCommit: rf.commitIndex,
 			}
@@ -428,7 +441,7 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 			var reply AppendEntriesReply
 
 			result := rf.sendAppendEntries(server, &request, &reply)
-			// PrintfInfo("%v sendAppendEntries %v, %v, %v", rf.me, server, &request, &reply)
+			PrintfInfo("%v sendAppendEntries to %v, %v, %v", rf.me, server, &request, &reply)
 
 			mu.Lock()
 			totalCount += 1
@@ -447,6 +460,8 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 						// If successful: update nextIndex and matchIndex for follower (§5.3)
 						rf.matchIndex[server] += len(entries)
 						rf.nextIndex[server] += len(entries)
+
+						// PrintfDebug("%v rf.nextIndex: %v", rf.me, rf.nextIndex)
 					} else {
 						// If a follower’s log is inconsistent with the leader’s,
 						// the AppendEntries consistency check will fail in the next AppendEntries RPC.
@@ -509,13 +524,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Step 1: append entry to local log as a new entry,
 	rf.mu.Lock()
 	// index at which log entry will be written. starts from 1
-	rf.lastIndex++
 	newLog := Log{
 		Command: command,
 		Term:    currentTerm,
-		Index:   rf.lastIndex,
+		Index:   rf.lastIndex(),
 	}
 	rf.log = append(rf.log, newLog)
+	PrintfSuccess("%v append(%v)", rf.me, newLog)
 	rf.mu.Unlock()
 
 	// Step 2: issue AppendEntries RPCs in parallel to each of the other servers to replicate the entry.
@@ -526,6 +541,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	result := rf.sendAppendEntriesToAllPeers()
 
 	if !result {
+		PrintfError("%v start(%v) failed", rf.me, command)
 		// should we remove the log entry?
 		return -1, currentTerm, true
 	}
@@ -534,13 +550,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// apply the entry to its state machine (commit the msg to applyCh)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.commitIndex = rf.lastIndex
+	rf.commitIndex = rf.lastIndex()
 	applyMsg := ApplyMsg{
 		CommandValid: true,
 		Command:      command,
-		CommandIndex: rf.lastIndex,
+		CommandIndex: rf.lastIndex(),
 	}
 	rf.applyCh <- applyMsg
+	PrintfSuccess("%v committed(%v). commitIndex: %v", rf.me, command, rf.commitIndex)
 
 	return rf.commitIndex, currentTerm, true
 }
@@ -643,8 +660,8 @@ func (rf *Raft) attemptElection(term int) {
 			request := RequestVoteArgs{
 				Term:         rf.currentTerm,
 				CandidateId:  rf.me,
-				LastLogIndex: rf.lastIndex,
-				LastLogTerm:  rf.logTerm(rf.lastIndex),
+				LastLogIndex: rf.lastIndex(),
+				LastLogTerm:  rf.logTerm(rf.lastIndex()),
 			}
 
 			var reply RequestVoteReply
@@ -689,7 +706,7 @@ func (rf *Raft) attemptElection(term int) {
 		// it initializes all nextIndex values to the index just after the last one in its log
 		// TODO: WHY???
 		for i := 0; i < len(rf.peers); i++ {
-			rf.nextIndex[i] = rf.lastIndex + 1
+			rf.nextIndex[i] = rf.lastIndex() + 1
 		}
 
 		PrintfSuccess("------- %v won election for term %v -------", rf.me, rf.currentTerm)
@@ -732,6 +749,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
+	rf.lastApplied = -1
+	rf.commitIndex = -1
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

@@ -90,6 +90,8 @@ type Raft struct {
 	// --- volatile state on leaders ---
 	nextIndex  []int
 	matchIndex []int
+
+	newLogEntries bool // indicates that there are new log entries which aren't sent to peers
 }
 
 type Log struct {
@@ -352,7 +354,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// If the logs have last entries with different terms, then the log with the later term is more up-to-date.
 	// If the logs end with the same term, then whichever log is longer is more up-to-date
 	// ---
-	if rf.lastIndex() != args.PrevLogIndex || rf.logTerm(rf.lastIndex()) != args.PrevLogTerm {
+	if args.PrevLogIndex > rf.lastIndex() || rf.logTerm(rf.lastIndex()) != args.PrevLogTerm {
 		PrintfWarn("%v RequestVote: denying AppendEntries to %v due to stale logs rf.lastIndex: %v, args.PrevLogIndex: %v", rf.me, args.LeaderId, rf.lastIndex(), args.PrevLogIndex)
 		reply.Success = false
 		return
@@ -396,13 +398,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			rf.applyCh <- applyMsg
 			rf.commitIndex++
-			PrintfSuccess("%v commited(%v). commitIndex: %v", rf.me, rf.log[i].Command, rf.commitIndex)
+			PrintfSuccess("%v commited(%v). commitIndex: %v", rf.me, rf.log[i], rf.commitIndex)
 		}
 
 		rf.commitIndex = newCommitIndex
 	}
-
-	// PrintfSuccess("%v log:(%v)", rf.me, rf.log)
 
 	reply.Success = true
 }
@@ -416,6 +416,13 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 	cond := sync.NewCond(&rf.mu)
 	successCount := 1
 	totalCount := 1
+	// TODO: set a max batch size
+	lastIndexSentToPeers := rf.lastIndex()
+
+	// we dont want to send the 1st dummy log
+	// if lastIndexSentToPeers == 0 {
+	// 	lastIndexSentToPeers = 1
+	// }
 
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
@@ -424,8 +431,12 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 
 		go func(server int, mu *sync.Mutex) {
 			mu.Lock()
-			entries := rf.log[rf.nextIndex[server]:]
-			// PrintfInfo("%v before sendAppendEntries %v, %v, %v", rf.me, rf.nextIndex[server], rf.lastIndex()+1, entries)
+			// PrintfDebug("%v rf.nextIndex: [%v:%v]", rf.me, rf.nextIndex[server], lastIndexSentToPeers+1)
+			entries := []Log{}
+			if rf.nextIndex[server] <= lastIndexSentToPeers {
+				entries = rf.log[rf.nextIndex[server] : lastIndexSentToPeers+1]
+			}
+			// PrintfInfo("%v before sendAppendEntries %v, %v, %v", rf.me, rf.nextIndex[server], lastIndexSentToPeers, entries)
 			request := AppendEntriesArgs{
 				Term:         rf.currentTerm,
 				LeaderId:     rf.me,
@@ -436,12 +447,7 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 			}
 			mu.Unlock()
 
-			// if state != Leader {
-			// 	PrintfInfo("%v skipping sendAppendEntries as state has now changed to %v", rf.me, state)
-			// }
-
-			var reply AppendEntriesReply
-
+			reply := AppendEntriesReply{}
 			result := rf.sendAppendEntries(server, &request, &reply)
 			PrintfInfo("%v sendAppendEntries to %v, %v, %v", rf.me, server, &request, &reply)
 
@@ -463,7 +469,7 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 						rf.matchIndex[server] += len(entries)
 						rf.nextIndex[server] += len(entries)
 
-						// PrintfDebug("%v rf.nextIndex: %v", rf.me, rf.nextIndex)
+						// PrintfDebug("%v updated rf.nextIndex: %v", rf.me, rf.nextIndex)
 					} else {
 						// If a follower’s log is inconsistent with the leader’s,
 						// the AppendEntries consistency check will fail in the next AppendEntries RPC.
@@ -494,7 +500,22 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 		cond.Wait()
 	}
 
-	return successCount >= rf.quorum
+	oldCommitIndex := rf.commitIndex
+
+	if successCount >= rf.quorum {
+		for i := oldCommitIndex + 1; i <= lastIndexSentToPeers; i++ {
+			applyMsg := ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[i].Command,
+				CommandIndex: rf.log[i].Index,
+			}
+			rf.applyCh <- applyMsg
+			rf.commitIndex++
+			PrintfSuccess("%v committed(%v). commitIndex: %v", rf.me, rf.log[i], rf.commitIndex)
+		}
+	}
+
+	return true
 }
 
 //
@@ -526,42 +547,26 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Step 1: append entry to local log as a new entry,
 	rf.mu.Lock()
 	// index at which log entry will be written. starts from 1
+	newLogIndex := rf.nextIndex[rf.me]
 	newLog := Log{
 		Command: command,
 		Term:    currentTerm,
-		Index:   rf.lastIndex() + 1,
+		Index:   newLogIndex,
 	}
 	rf.log = append(rf.log, newLog)
+	rf.nextIndex[rf.me]++
 	PrintfSuccess("%v append(%v)", rf.me, newLog)
+	rf.newLogEntries = true
 	rf.mu.Unlock()
 
 	// Step 2: issue AppendEntries RPCs in parallel to each of the other servers to replicate the entry.
 	// If followers crash or run slowly, or if network packets are lost,
 	// the leader retries AppendEntries RPCs indefinitely (even after it has responded to the client)
 	// until all followers eventually store all log entries.
-	// PrintfInfo("%v sendAppendEntriesToAllPeers 2: %v", rf.me, time.Since(rf.heartbeatTimer))
-	result := rf.sendAppendEntriesToAllPeers()
+	// --------- This will happen in the trigger loop
+	// go rf.sendAppendEntriesToAllPeers()
 
-	if !result {
-		PrintfError("%v start(%v) failed", rf.me, command)
-		// should we remove the log entry?
-		return -1, currentTerm, true
-	}
-
-	// Step 3: Once the entry has been safely replicated,
-	// apply the entry to its state machine (commit the msg to applyCh)
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	rf.commitIndex = rf.lastIndex()
-	applyMsg := ApplyMsg{
-		CommandValid: true,
-		Command:      command,
-		CommandIndex: rf.lastIndex(),
-	}
-	rf.applyCh <- applyMsg
-	PrintfSuccess("%v committed(%v). commitIndex: %v", rf.me, command, rf.commitIndex)
-
-	return rf.commitIndex, currentTerm, true
+	return newLogIndex, currentTerm, true
 }
 
 //
@@ -606,9 +611,10 @@ func (rf *Raft) ticker() {
 				go rf.attemptElection(rf.currentTerm + 1)
 			}
 		} else if rf.state == Leader {
-			if time.Since(rf.heartbeatTimer) > 200*time.Millisecond {
+			if rf.newLogEntries || time.Since(rf.heartbeatTimer) > 200*time.Millisecond {
 				// Update election timer before sending heartbeat
 				// PrintfInfo("%v sendAppendEntriesToAllPeers: %v", rf.me, time.Since(rf.heartbeatTimer))
+				rf.newLogEntries = false
 				rf.heartbeatTimer = time.Now()
 				go rf.sendAppendEntriesToAllPeers()
 			}
@@ -751,6 +757,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
+	for i := 0; i < len(rf.peers); i++ {
+		rf.nextIndex[i] = 1
+		rf.matchIndex[i] = 1
+	}
+	PrintfDebug("%v rf.nextIndex: %v", rf.me, rf.nextIndex)
+
 	newLog := Log{
 		Command: -1,
 		Term:    0,

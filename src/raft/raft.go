@@ -236,9 +236,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	// if args.Term > rf.currentTerm {
-	// 	rf.stepDown(args.Term, "detected stale term in RequestVote")
-	// }
+	// this is crucial for TestReElection2A
+	// when 2 candidates are requesting votes for different terms. the one with the older term has to step down and update term.
+	if args.Term > rf.currentTerm {
+		rf.stepDown(args.Term, "detected stale term in RequestVote")
+	}
 
 	reply.Term = rf.currentTerm
 
@@ -251,7 +253,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// Reject voke if receiver has already voted in this term
 	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
-		PrintfWarn("%v RequestVote: denying vote to %v because receiver already voted for %v.", rf.me, args.CandidateId, rf.votedFor)
+		PrintfWarn("%v RequestVote: denying vote to %v for Term: %v because receiver already voted for %v.", rf.me, args.CandidateId, args.Term, rf.votedFor)
 		reply.VoteGranted = false
 		return
 	}
@@ -263,6 +265,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
+	PrintfInfo("%v granting vote to: %v for %v (rf.votedFor: %v)", rf.me, args.CandidateId, reply.Term, rf.votedFor)
+
 	// 2. If votedFor is null or candidateId, and candidate’s log is at
 	// least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 	rf.votedFor = args.CandidateId
@@ -270,8 +274,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// UpdateElectionTimer if vote is granted to a candidate in a RequestVote RPC call.
 	rf.updateElectionTimer()
-
-	// PrintfInfo("%v RequestVote: %v", rf.me, reply)
 }
 
 //
@@ -345,7 +347,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 2. Reply false if log doesn’t contain an entry at PrevLogIndex
 	// whose term matches PrevLogTerm (§5.3)
 	// Very Important Consistency check!
-	if rf.lastIndex > args.PrevLogIndex || rf.logTerm(rf.lastIndex) != args.PrevLogTerm {
+	if rf.lastIndex < args.PrevLogIndex || rf.logTerm(rf.lastIndex) != args.PrevLogTerm {
 		PrintfWarn("%v RequestVote: denying AppendEntries to %v due to stale logs rf.lastIndex: %v, args.PrevLogIndex: %v", rf.me, args.LeaderId, rf.lastIndex, args.PrevLogIndex)
 		reply.Success = false
 		return
@@ -418,6 +420,11 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 				LeaderCommit: rf.commitIndex,
 			}
 			mu.Unlock()
+
+			// if state != Leader {
+			// 	PrintfInfo("%v skipping sendAppendEntries as state has now changed to %v", rf.me, state)
+			// }
+
 			var reply AppendEntriesReply
 
 			result := rf.sendAppendEntries(server, &request, &reply)
@@ -426,7 +433,7 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 			mu.Lock()
 			totalCount += 1
 			if !result {
-				PrintfWarn("%v sendAppendEntries request to %v failed", rf.me, server)
+				// PrintfWarn("%v sendAppendEntries request to %v failed", rf.me, server)
 			} else {
 				if rf.currentTerm < reply.Term {
 					rf.stepDown(reply.Term, "detected stale term from AppendEntries.Reply")
@@ -633,11 +640,12 @@ func (rf *Raft) attemptElection(term int) {
 		}
 
 		go func(server int, mu *sync.Mutex) {
-			var request RequestVoteArgs
-			request.Term = rf.currentTerm
-			request.CandidateId = rf.me
-			request.LastLogIndex = rf.lastIndex
-			request.LastLogTerm = rf.logTerm(rf.lastIndex)
+			request := RequestVoteArgs{
+				Term:         rf.currentTerm,
+				CandidateId:  rf.me,
+				LastLogIndex: rf.lastIndex,
+				LastLogTerm:  rf.logTerm(rf.lastIndex),
+			}
 
 			var reply RequestVoteReply
 			// PrintfInfo("%v sendRequestVote for term %v to %v.", rf.me, request.Term, server)
@@ -668,7 +676,7 @@ func (rf *Raft) attemptElection(term int) {
 
 	if rf.state != Candidate || rf.currentTerm != term {
 		PrintfWarn("%v ignoring voting result as state or term has changed", rf.me)
-		rf.votedFor = -1
+		// rf.votedFor = -1
 		return
 	}
 
@@ -687,7 +695,6 @@ func (rf *Raft) attemptElection(term int) {
 		PrintfSuccess("------- %v won election for term %v -------", rf.me, rf.currentTerm)
 		go rf.sendAppendEntriesToAllPeers()
 	} else {
-		rf.votedFor = -1
 		PrintfError("------- %v lost election for term %v -------", rf.me, rf.currentTerm)
 		go rf.attemptElection(rf.currentTerm + 1)
 	}

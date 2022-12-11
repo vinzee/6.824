@@ -146,14 +146,16 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	v := m.Command
 	for j := 0; j < len(cfg.logs); j++ {
 		if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
-			log.Printf("%v: log %v; server %v\n", i, cfg.logs[i], cfg.logs[j])
+			// log.Printf("%v: log %v; server %v\n", i, cfg.logs[i], cfg.logs[j])
 			// some server has already committed a different value for this entry!
 			err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
 				m.CommandIndex, i, m.Command, j, old)
 		}
 	}
 	_, prevok := cfg.logs[i][m.CommandIndex-1]
+	// PrintfPurple("before cfg.logs[%v][%v] = %v", i, m.CommandIndex, v)
 	cfg.logs[i][m.CommandIndex] = v
+	// PrintfPurple("cfg.logs: %v", cfg.logs)
 	if m.CommandIndex > cfg.maxIndex {
 		cfg.maxIndex = m.CommandIndex
 	}
@@ -169,8 +171,10 @@ func (cfg *config) applier(i int, applyCh chan ApplyMsg) {
 		} else {
 			cfg.mu.Lock()
 			err_msg, prevok := cfg.checkLogs(i, m)
+			// PrintfPurple("checkLogs: %v %v %v %v", i, m, err_msg, prevok)
 			cfg.mu.Unlock()
 			if m.CommandIndex > 1 && prevok == false {
+				// PrintfError("checkLogs: server %v apply out of order %v", i, m.CommandIndex)
 				err_msg = fmt.Sprintf("server %v apply out of order %v", i, m.CommandIndex)
 			}
 			if err_msg != "" {

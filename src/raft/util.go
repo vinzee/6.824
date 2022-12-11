@@ -3,9 +3,8 @@ package raft
 import "log"
 
 // Debugging
-const Debug = true
-
-// const Debug = false
+// const Debug = true
+const Debug = false
 
 const (
 	Reset  string = "\033[0m"

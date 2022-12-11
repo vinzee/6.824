@@ -402,6 +402,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.commitIndex = newCommitIndex
 	}
 
+	// PrintfSuccess("%v log:(%v)", rf.me, rf.log)
+
 	reply.Success = true
 }
 
@@ -527,7 +529,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	newLog := Log{
 		Command: command,
 		Term:    currentTerm,
-		Index:   rf.lastIndex(),
+		Index:   rf.lastIndex() + 1,
 	}
 	rf.log = append(rf.log, newLog)
 	PrintfSuccess("%v append(%v)", rf.me, newLog)
@@ -749,8 +751,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
-	rf.lastApplied = -1
-	rf.commitIndex = -1
+	newLog := Log{
+		Command: -1,
+		Term:    0,
+		Index:   0,
+	}
+	rf.log = []Log{newLog}
+	// rf.lastApplied = -1
+	// rf.commitIndex = -1
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

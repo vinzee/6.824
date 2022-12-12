@@ -608,14 +608,14 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 				time.Sleep(20 * time.Millisecond)
 			}
 			if retry == false {
-				cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
+				cfg.t.Fatalf("one(%v) failed to reach agreement on %v expectedServers", cmd, expectedServers)
 			}
 		} else {
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
 	if cfg.checkFinished() == false {
-		cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
+		cfg.t.Fatalf("one(%v) failed to reach agreement on %v expectedServers", cmd, expectedServers)
 	}
 	return -1
 }

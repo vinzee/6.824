@@ -2,6 +2,8 @@
 
 ## Links
 - https://pdos.csail.mit.edu/6.824/
+- https://pdos.csail.mit.edu/6.824/labs/guidance.html
+- Debugging distributed systems: https://blog.josejg.com/debugging-pretty/
 - Youtube lectures: https://www.youtube.com/playlist?list=PLrw6a1wE39_tb2fErI4-WkMbsvGQk9_UB
 - https://github.com/nsiregar/mit-go
 
@@ -15,11 +17,6 @@ Final course grades will be based on:
 ## Course Prerequisites
 - http://web.mit.edu/6.033/www/index.shtml (operating systems, networking, distributed systems, and security)
 - https://pdos.csail.mit.edu/6.828/2022/schedule.html (Operating Systems Engineering)
-
-## Lab Prerequisites
-- https://pdos.csail.mit.edu/6.824/labs/guidance.html
-- Debugging distributed systems: https://blog.josejg.com/debugging-pretty/
-- Lecture 5: Go, Threads, and Raft: https://www.youtube.com/watch?v=UzzcUS2OHqo
 
 ## Lab 1: Map Reduce
 - https://pdos.csail.mit.edu/6.824/labs/lab-mr.html
@@ -45,7 +42,7 @@ Final course grades will be based on:
 - [x] TestLeaderFailure2B
 - [x] TestFailAgree2B
 - [x] TestFailNoAgree2B
-- [] TestConcurrentStarts2B
+- [x] TestConcurrentStarts2B
 - [x] TestRejoin2B
 - [] TestBackup2B
 - [x] TestCount2B
@@ -65,3 +62,22 @@ Final course grades will be based on:
 - [] TestSnapshotAllCrash2D
 
 ![Raft Figure 2](./docs/raft_figure_2.png "Raft Figure 2")
+
+
+## Go-Lang
+- Race Detection: https://www.sohamkamani.com/golang/data-races/
+- Lecture 5: Go, Threads, and Raft: https://www.youtube.com/watch?v=UzzcUS2OHqo
+```
+	cond := sync.NewCond(&mutex)
+    mutex.Lock()
+    ... do work ...
+    cond.Broadcast()
+    mutex.Unlock()
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	for wait-condition {
+		cond.Wait()
+    }
+```

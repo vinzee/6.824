@@ -21,6 +21,7 @@ import (
 	//	"bytes"
 
 	"fmt"
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -362,21 +363,30 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// PrintfWarn("%v AppendEntries from %v. rf.lastIndex: %v, rf.logTerm(rf.lastIndex()): %v, args.PrevLogIndex: %v", rf.me, args.LeaderId, rf.lastIndex(), rf.logTerm(rf.lastIndex()), args.PrevLogTerm)
 
-	// pop all conflicting log
+	// 3. If an existing entry conflicts with a new one (same index but different terms),
+	// delete the existing entry and all that follow it (§5.3)
 	if len(args.Entries) > 0 && rf.logTerm(args.PrevLogIndex+1) != args.Entries[0].Term {
 		// PrintfWarn("%v before pop: %v", rf.me, rf.log)
 		rf.log = rf.log[:args.PrevLogIndex+1]
 		// PrintfWarn("%v after pop: %v", rf.me, rf.log)
 	}
 
+	curr_index := args.PrevLogIndex + 1
 	for i := 0; i < len(args.Entries); i++ {
-		// 3. If an existing entry conflicts with a new one (same index
-		// but different terms), delete the existing entry and all that
-		// follow it (§5.3)
+		// ignore log entries if already present in its log
+		if curr_index < len(rf.log) {
+			continue
+		}
+
+		if len(rf.log) != args.Entries[i].Index {
+			log.Fatalf("%v trying to apply Log %v at wrong index %v in %v", rf.me, args.Entries[i], len(rf.log), rf.log)
+		}
 
 		// 4. Append any new entries not already in the log
 		rf.log = append(rf.log, args.Entries[i])
 		// PrintfSuccess("%v:%v append(%v)", rf.me, rf.state, args.Entries[i])
+
+		curr_index++
 	}
 
 	// 5. If leaderCommit > commitIndex, set commitIndex =
@@ -418,12 +428,9 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 	successCount := 1
 	totalCount := 1
 	// TODO: set a max batch size
+	rf.mu.Lock()
 	lastIndexSentToPeers := rf.lastIndex()
-
-	// we dont want to send the 1st dummy log
-	// if lastIndexSentToPeers == 0 {
-	// 	lastIndexSentToPeers = 1
-	// }
+	rf.mu.Unlock()
 
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
@@ -432,12 +439,11 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 
 		go func(server int, mu *sync.Mutex) {
 			mu.Lock()
-			// PrintfDebug("%v rf.nextIndex: [%v:%v]", rf.me, rf.nextIndex[server], lastIndexSentToPeers+1)
+			// PrintfDebug("%v b4.sendAppendEntries to %v rf.nextIndex: [%v:%v]", rf.me, server, rf.nextIndex[server], lastIndexSentToPeers+1)
 			entries := []Log{}
 			if rf.nextIndex[server] <= lastIndexSentToPeers {
 				entries = rf.log[rf.nextIndex[server] : lastIndexSentToPeers+1]
 			}
-			// PrintfInfo("%v before sendAppendEntries PrevLogIndex:%v, PrevLogTerm:%v", rf.me, rf.nextIndex[server]-1, rf.logTerm(rf.nextIndex[server]-1))
 			request := AppendEntriesArgs{
 				Term:         rf.currentTerm,
 				LeaderId:     rf.me,
@@ -446,6 +452,7 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 				Entries:      entries,
 				LeaderCommit: rf.commitIndex,
 			}
+			// PrintfInfo("%v b4.sendAppendEntries to %v request:%v", rf.me, server, request)
 			mu.Unlock()
 
 			reply := AppendEntriesReply{}
@@ -470,7 +477,7 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 						rf.matchIndex[server] += len(entries)
 						rf.nextIndex[server] += len(entries)
 
-						// PrintfDebug("%v updated rf.nextIndex: %v", rf.me, rf.nextIndex)
+						PrintfDebug("%v updated rf.nextIndex: %v", rf.me, rf.nextIndex)
 					} else {
 						// If a follower’s log is inconsistent with the leader’s,
 						// the AppendEntries consistency check will fail in the next AppendEntries RPC.
@@ -494,10 +501,10 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 		}(i, &rf.mu)
 	}
 
-	// wait for all RPCs
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	// wait for all RPCs
 	for totalCount < len(rf.peers) {
 		cond.Wait()
 
@@ -538,18 +545,17 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	currentTerm := rf.currentTerm
 	isLeader := rf.isleader()
-	rf.mu.Unlock()
 
 	// return false if its not the leader
 	if !isLeader {
-		PrintfInfo("%v:%v Start(%v). result: false", rf.me, rf.state, command)
+		// PrintfInfo("%v:%v Start(%v). result: false", rf.me, rf.state, command)
 		return -1, currentTerm, false
 	}
 
 	// Step 1: append entry to local log as a new entry,
-	rf.mu.Lock()
 	// index at which log entry will be written. starts from 1
 	newLogIndex := rf.nextIndex[rf.me]
 	newLog := Log{
@@ -563,7 +569,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.newLogEntries = true
 	PrintfInfo("%v:%v Start(%v). result: true", rf.me, rf.state, command)
 	PrintfPurple("%v:%v log: %v. commitIndex: %v", rf.me, rf.state, rf.log, rf.commitIndex)
-	rf.mu.Unlock()
 
 	// Step 2: (This will happen in rf.sendAppendEntriesToAllPeers() in the next trigger loop)
 	// issue AppendEntries RPCs in parallel to each of the other servers to replicate the entry.
@@ -632,10 +637,6 @@ func (rf *Raft) ticker() {
 	}
 }
 
-// • Increment currentTerm
-// • Vote for self
-// • Reset election timer
-// • Send RequestVote RPCs to all other servers
 func (rf *Raft) attemptElection(term int) {
 	// sleep for random time
 	ms := (rand.Int() % 50)
@@ -716,7 +717,6 @@ func (rf *Raft) attemptElection(term int) {
 
 		// When a leader first comes to power,
 		// it initializes all nextIndex values to the index just after the last one in its log
-		// TODO: WHY???
 		for i := 0; i < len(rf.peers); i++ {
 			rf.nextIndex[i] = rf.lastIndex() + 1
 		}

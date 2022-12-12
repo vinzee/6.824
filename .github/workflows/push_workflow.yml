@@ -1,4 +1,4 @@
-name: Go package
+name: 6.824
 
 on: [push]
 
@@ -14,8 +14,5 @@ jobs:
         with:
           go-version: 1.16
 
-      - name: Build
-        run: go build -v ./src/raft
-
-      - name: Test
-        run: go test -v ./src/raft
+      - name: Build & Test
+        run: cd ./src/raft && go test

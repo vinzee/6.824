@@ -264,13 +264,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// Reject voke if candidate’s log is stale
-	if rf.lastApplied > 0 && rf.log[rf.lastApplied].Index > args.LastLogIndex && rf.logTerm(rf.lastApplied) > args.LastLogTerm {
+	if (args.LastLogIndex < len(rf.log)-1) || rf.logTerm(rf.lastApplied) > args.LastLogTerm {
 		PrintfWarn("%v RequestVote: denying vote to %v due to stale logs", rf.me, args.CandidateId)
 		reply.VoteGranted = false
 		return
 	}
 
-	// PrintfInfo("%v granting vote to: %v for %v (rf.votedFor: %v)", rf.me, args.CandidateId, reply.Term, rf.votedFor)
+	PrintfInfo("%v granting vote to: %v for %v (args.LastLogIndex: %v)", rf.me, args.CandidateId, reply.Term, args.LastLogIndex)
 
 	// 2. If votedFor is null or candidateId, and candidate’s log is at
 	// least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
@@ -355,7 +355,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// If the logs end with the same term, then whichever log is longer is more up-to-date
 	// ---
 	if args.PrevLogIndex > rf.lastIndex() || rf.logTerm(rf.lastIndex()) != args.PrevLogTerm {
-		PrintfWarn("%v AppendEntries: denying from %v due to stale logs rf.lastIndex: %v, args.PrevLogIndex: %v", rf.me, args.LeaderId, rf.lastIndex(), args.PrevLogIndex)
+		// PrintfWarn("%v AppendEntries: denying from %v due to stale logs rf.lastIndex: %v, args.PrevLogIndex: %v", rf.me, args.LeaderId, rf.lastIndex(), args.PrevLogIndex)
 		reply.Success = false
 		return
 	}
@@ -478,7 +478,7 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 						rf.matchIndex[server] += len(entries)
 						rf.nextIndex[server] += len(entries)
 
-						PrintfDebug("%v updated rf.nextIndex: %v", rf.me, rf.nextIndex)
+						// PrintfDebug("%v updated rf.nextIndex: %v", rf.me, rf.nextIndex)
 					} else {
 						// If a follower’s log is inconsistent with the leader’s,
 						// the AppendEntries consistency check will fail in the next AppendEntries RPC.
@@ -552,7 +552,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// return false if its not the leader
 	if !isLeader {
-		// PrintfInfo("%v:%v Start(%v). result: false", rf.me, rf.state, command)
+		PrintfInfo("%v:%v Start(%v). result: false", rf.me, rf.state, command)
 		return -1, currentTerm, false
 	}
 
@@ -566,9 +566,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.log = append(rf.log, newLog)
 	rf.nextIndex[rf.me]++
-	// PrintfSuccess("%v:%v append(%v)", rf.me, rf.state, newLog)
 	rf.newLogEntries = true
-	PrintfInfo("%v:%v Start(%v). result: true", rf.me, rf.state, command)
+	PrintfInfo("%v:%v Start(%v). result: true. newLogIndex: %v", rf.me, rf.state, command, newLogIndex)
 	PrintfPurple("%v:%v log: %v. commitIndex: %v", rf.me, rf.state, rf.log, rf.commitIndex)
 
 	// Step 2: (This will happen in rf.sendAppendEntriesToAllPeers() in the next trigger loop)
@@ -707,6 +706,7 @@ func (rf *Raft) attemptElection(term int) {
 	defer rf.mu.Unlock()
 
 	// wait till we get all votes or get enough upvotes
+	// NOTE: this loop needs to wait for either (votesGranted or votesTotal)
 	for votesGranted < rf.quorum && votesTotal < len(rf.peers) {
 		cond.Wait()
 		if rf.state != Candidate || rf.currentTerm != term {
@@ -723,6 +723,7 @@ func (rf *Raft) attemptElection(term int) {
 	// If votes received from majority of servers: become leader
 	// else, retry election
 	if votesGranted >= rf.quorum {
+		PrintfSuccess("------- %v won election for term %v -------", rf.me, rf.currentTerm)
 		rf.state = Leader
 
 		// When a leader first comes to power,
@@ -731,7 +732,6 @@ func (rf *Raft) attemptElection(term int) {
 			rf.nextIndex[i] = rf.lastIndex() + 1
 		}
 
-		PrintfSuccess("------- %v won election for term %v -------", rf.me, rf.currentTerm)
 		go rf.sendAppendEntriesToAllPeers()
 	} else {
 		PrintfError("------- %v lost election for term %v -------", rf.me, rf.currentTerm)

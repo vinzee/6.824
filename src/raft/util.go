@@ -1,11 +1,12 @@
 package raft
 
-import "log"
+import (
+	"log"
+	"os"
+)
 
 // Debugging
-const Debug = true
-
-// const Debug = false
+var Debug bool = false
 
 const (
 	Reset  string = "\033[0m"
@@ -17,6 +18,12 @@ const (
 	Cyan          = "\033[36m"
 	White         = "\033[37m"
 )
+
+func SetDebugMode() {
+	if os.Getenv("DEBUG") == "true" {
+		Debug = true
+	}
+}
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {

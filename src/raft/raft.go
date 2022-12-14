@@ -237,7 +237,7 @@ type RequestVoteReply struct {
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// PrintfPurple("%v RequestVote received for CandidateId:%v for Term: %v", rf.me, args.CandidateId, args.Term)
+	PrintfPurple("%v RequestVote received for CandidateId:%v for Term: %v", rf.me, args.CandidateId, args.Term)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -251,14 +251,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
-		// PrintfWarn("%v RequestVote: denying vote to %v due to stale term %v", rf.me, args.CandidateId, args.Term)
+		PrintfWarn("%v RequestVote: denying vote to %v due to stale term %v", rf.me, args.CandidateId, args.Term)
 		reply.VoteGranted = false
 		return
 	}
 
 	// Reject voke if receiver has already voted in this term
 	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
-		// PrintfWarn("%v RequestVote: denying vote to %v for Term: %v because receiver already voted for %v.", rf.me, args.CandidateId, args.Term, rf.votedFor)
+		PrintfWarn("%v RequestVote: denying vote to %v for Term: %v because receiver already voted for %v.", rf.me, args.CandidateId, args.Term, rf.votedFor)
 		reply.VoteGranted = false
 		return
 	}
@@ -329,7 +329,6 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// PrintfPurple("%v received AppendEntries from %v", rf.me, args.LeaderId)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -341,7 +340,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
-		PrintfWarn("%v AppendEntries: denying from %v due to stale term %v", rf.me, args.LeaderId, args.Term)
+		// PrintfWarn("%v AppendEntries: denying from %v due to stale term %v", rf.me, args.LeaderId, args.Term)
 		reply.Success = false
 		return
 	}
@@ -356,7 +355,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// If the logs end with the same term, then whichever log is longer is more up-to-date
 	// ---
 	if args.PrevLogIndex > rf.lastIndex() || rf.logTerm(rf.lastIndex()) != args.PrevLogTerm {
-		// PrintfWarn("%v AppendEntries: denying from %v due to stale logs rf.lastIndex: %v, args.PrevLogIndex: %v", rf.me, args.LeaderId, rf.lastIndex(), args.PrevLogIndex)
+		PrintfWarn("%v AppendEntries: denying from %v due to stale logs rf.lastIndex: %v, args.PrevLogIndex: %v", rf.me, args.LeaderId, rf.lastIndex(), args.PrevLogIndex)
 		reply.Success = false
 		return
 	}
@@ -374,6 +373,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	curr_index := args.PrevLogIndex + 1
 	for i := 0; i < len(args.Entries); i++ {
 		// ignore log entries if already present in its log
+		// This makes appendEntries requests idempotent
+		// required for TestConcurrentStarts2B
 		if curr_index < len(rf.log) {
 			continue
 		}
@@ -605,11 +606,11 @@ func (rf *Raft) killed() bool {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-		// PrintfDebug("%v ticker: %v", rf.me, rf.state)
 
 		// • If election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate:
 		// convert to candidate
 		rf.mu.Lock()
+		// PrintfDebug("%v ticker: %v", rf.me, rf.state)
 		if rf.state == Follower {
 			// PrintfDebug("%v checking election timer: %v", rf.me, rf.electionTimer)
 			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
@@ -634,6 +635,8 @@ func (rf *Raft) ticker() {
 			}
 		}
 		rf.mu.Unlock()
+
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -650,6 +653,8 @@ func (rf *Raft) attemptElection(term int) {
 		PrintfWarn("%v Skipping election as state has changed to %v", rf.me, currentState)
 		return
 	}
+
+	electionStartTime := time.Now()
 
 	PrintfInfo("%v attempting election for term: %v ", rf.me, term)
 
@@ -685,12 +690,12 @@ func (rf *Raft) attemptElection(term int) {
 			mu.Lock()
 			votesTotal += 1
 			if !result {
-				// PrintfWarn("%v sendRequestVote request to %v failed", rf.me, server)
+				PrintfWarn("%v sendRequestVote request to %v failed", rf.me, server)
 			} else {
 				if reply.VoteGranted {
 					votesGranted += 1
 				}
-				// PrintfInfo("%v received vote for term %v from %v. result: %v. votesGranted: %v", rf.me, request.Term, server, reply, votesGranted)
+				PrintfInfo("%v received vote for term %v from %v. result: %v. votesGranted: %v", rf.me, request.Term, server, reply, votesGranted)
 			}
 			cond.Broadcast()
 			mu.Unlock()
@@ -707,6 +712,11 @@ func (rf *Raft) attemptElection(term int) {
 		if rf.state != Candidate || rf.currentTerm != term {
 			PrintfWarn("%v ignoring voting result as state or term has changed", rf.me)
 			return
+		}
+
+		if time.Since(electionStartTime) > 500*time.Millisecond {
+			PrintfDebug("%v time since electionStartTime: %v", rf.me, time.Since(electionStartTime))
+			break
 		}
 	}
 
@@ -741,8 +751,9 @@ func (rf *Raft) attemptElection(term int) {
 
 // Make() must return quickly, so it should start goroutines for any long-running work.
 
-func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
+func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
+	SetDebugMode()
+
 	rf := &Raft{}
 	rf.peers = peers
 	rf.quorum = (len(peers) / 2) + 1

@@ -14,5 +14,7 @@ jobs:
         with:
           go-version: 1.16
 
-      - name: Test Raft
-        run: cd ./src/raft && go test -race
+      - name: Test Raft 2A
+        run: cd ./src/raft && go test -run 2A -race
+      - name: Test Raft 2B
+        run: cd ./src/raft && go test -run 2B -race

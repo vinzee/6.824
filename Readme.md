@@ -28,9 +28,21 @@ Final course grades will be based on:
 - https://thesquareplanet.com/blog/students-guide-to-raft/
 - https://thesquareplanet.com/blog/instructors-guide-to-raft/
     - Figure 2 is, in reality, a formal specification, where every clause is a MUST, not a SHOULD.
-- Reference Implamentation: https://github.com/ongardie/raftscope/blob/master/raft.js
-- `go test -run 2A -race`
-- `$ for i in {0..10}; do go test; done`
+- Reference Implementation: https://github.com/ongardie/raftscope/blob/master/raft.js
+- Reference Implementation: https://github.com/Sorosliu1029/6.824/blob/master/src/raft/raft.go
+```
+# enable debug logs
+DEBUG=true go test -run 2A
+
+# test with race condition checker
+go test -run 2A -race
+
+# test with time
+time go test -run 2A
+
+# test multiple times
+$ for i in {0..10}; do go test -run 2A; done
+```
 
 ### Tests
 - [x] TestInitialElection2A
@@ -66,6 +78,7 @@ Final course grades will be based on:
 
 ## Go-Lang
 - Race Detection: https://www.sohamkamani.com/golang/data-races/
+- https://go.dev/doc/articles/race_detector
 - Lecture 5: Go, Threads, and Raft: https://www.youtube.com/watch?v=UzzcUS2OHqo
 ```
 	cond := sync.NewCond(&mutex)

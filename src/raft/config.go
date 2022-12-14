@@ -365,7 +365,7 @@ func (cfg *config) cleanup() {
 
 // attach server i to the net.
 func (cfg *config) connect(i int) {
-	log.Printf(Green+"---connect(%d)---"+Reset, i)
+	PrintfError("---connect(%d)---", i)
 
 	cfg.connected[i] = true
 
@@ -388,7 +388,7 @@ func (cfg *config) connect(i int) {
 
 // detach server i from the net.
 func (cfg *config) disconnect(i int) {
-	log.Printf(Red+"---Disconnect(%d)---"+Reset, i)
+	PrintfError("---Disconnect(%d)---", i)
 
 	cfg.connected[i] = false
 

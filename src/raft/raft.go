@@ -707,7 +707,7 @@ func (rf *Raft) attemptElection(term int) {
 	defer rf.mu.Unlock()
 
 	// wait till we get all votes or get enough upvotes
-	for votesGranted < rf.quorum || votesTotal < len(rf.peers) {
+	for votesGranted < rf.quorum && votesTotal < len(rf.peers) {
 		cond.Wait()
 		if rf.state != Candidate || rf.currentTerm != term {
 			PrintfWarn("%v ignoring voting result as state or term has changed", rf.me)
@@ -752,8 +752,6 @@ func (rf *Raft) attemptElection(term int) {
 // Make() must return quickly, so it should start goroutines for any long-running work.
 
 func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
-	SetDebugMode()
-
 	rf := &Raft{}
 	rf.peers = peers
 	rf.quorum = (len(peers) / 2) + 1

@@ -1,5 +1,7 @@
 # 6.824: Distributed Systems (MIT)
 
+![Master Build](https://github.com/github/docs/actions/workflows/main.yml/badge.svg)
+
 ## Links
 - https://pdos.csail.mit.edu/6.824/
 - https://pdos.csail.mit.edu/6.824/labs/guidance.html

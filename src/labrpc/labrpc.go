@@ -49,15 +49,18 @@ package labrpc
 //   pass svc to srv.AddService()
 //
 
-import "6.824/labgob"
-import "bytes"
-import "reflect"
-import "sync"
-import "log"
-import "strings"
-import "math/rand"
-import "time"
-import "sync/atomic"
+import (
+	"bytes"
+	"log"
+	"math/rand"
+	"reflect"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"6.824/labgob"
+)
 
 type reqMsg struct {
 	endname  interface{} // name of sending ClientEnd
@@ -195,6 +198,7 @@ func (rn *Network) readEndnameInfo(endname interface{}) (enabled bool,
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 
+	// log.Printf("rn.enabled: %v", rn.enabled)
 	enabled = rn.enabled[endname]
 	servername = rn.connections[endname]
 	if servername != nil {
@@ -290,6 +294,7 @@ func (rn *Network) processReq(req reqMsg) {
 			req.replyCh <- reply
 		}
 	} else {
+		// log.Printf("\033[33m"+"simulating no reply and eventual timeout. destination:%v"+"\033[0m", servername)
 		// simulate no reply and eventual timeout.
 		ms := 0
 		if rn.longDelays {
@@ -358,6 +363,8 @@ func (rn *Network) Enable(endname interface{}, enabled bool) {
 	defer rn.mu.Unlock()
 
 	rn.enabled[endname] = enabled
+
+	// log.Printf("---Enable: %v: %v)---", endname, enabled)
 }
 
 // get a server's count of incoming RPCs.

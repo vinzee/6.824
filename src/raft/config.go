@@ -8,20 +8,24 @@ package raft
 // test with the original before submitting.
 //
 
-import "6.824/labgob"
-import "6.824/labrpc"
-import "bytes"
-import "log"
-import "sync"
-import "sync/atomic"
-import "testing"
-import "runtime"
-import "math/rand"
-import crand "crypto/rand"
-import "math/big"
-import "encoding/base64"
-import "time"
-import "fmt"
+import (
+	"bytes"
+	"log"
+	"math/rand"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	"6.824/labgob"
+	"6.824/labrpc"
+
+	crand "crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"math/big"
+	"time"
+)
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)
@@ -65,7 +69,7 @@ var ncpu_once sync.Once
 func make_config(t *testing.T, n int, unreliable bool, snapshot bool) *config {
 	ncpu_once.Do(func() {
 		if runtime.NumCPU() < 2 {
-			fmt.Printf("warning: only one CPU, which may conceal locking bugs\n")
+			log.Printf("warning: only one CPU, which may conceal locking bugs\n")
 		}
 		rand.Seed(makeSeed())
 	})
@@ -142,14 +146,15 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	v := m.Command
 	for j := 0; j < len(cfg.logs); j++ {
 		if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
-			log.Printf("%v: log %v; server %v\n", i, cfg.logs[i], cfg.logs[j])
 			// some server has already committed a different value for this entry!
 			err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
 				m.CommandIndex, i, m.Command, j, old)
 		}
 	}
 	_, prevok := cfg.logs[i][m.CommandIndex-1]
+	// PrintfPurple("before cfg.logs[%v][%v] = %v", i, m.CommandIndex, v)
 	cfg.logs[i][m.CommandIndex] = v
+	// PrintfPurple("cfg.logs: %v", cfg.logs)
 	if m.CommandIndex > cfg.maxIndex {
 		cfg.maxIndex = m.CommandIndex
 	}
@@ -165,8 +170,10 @@ func (cfg *config) applier(i int, applyCh chan ApplyMsg) {
 		} else {
 			cfg.mu.Lock()
 			err_msg, prevok := cfg.checkLogs(i, m)
+			// PrintfPurple("checkLogs: %v %v %v %v", i, m, err_msg, prevok)
 			cfg.mu.Unlock()
 			if m.CommandIndex > 1 && prevok == false {
+				// PrintfError("checkLogs: server %v apply out of order %v", i, m.CommandIndex)
 				err_msg = fmt.Sprintf("server %v apply out of order %v", i, m.CommandIndex)
 			}
 			if err_msg != "" {
@@ -358,7 +365,7 @@ func (cfg *config) cleanup() {
 
 // attach server i to the net.
 func (cfg *config) connect(i int) {
-	// fmt.Printf("connect(%d)\n", i)
+	PrintfError("---connect(%d)---", i)
 
 	cfg.connected[i] = true
 
@@ -381,7 +388,7 @@ func (cfg *config) connect(i int) {
 
 // detach server i from the net.
 func (cfg *config) disconnect(i int) {
-	// fmt.Printf("disconnect(%d)\n", i)
+	PrintfError("---Disconnect(%d)---", i)
 
 	cfg.connected[i] = false
 
@@ -446,7 +453,7 @@ func (cfg *config) checkOneLeader() int {
 		lastTermWithLeader := -1
 		for term, leaders := range leaders {
 			if len(leaders) > 1 {
-				cfg.t.Fatalf("term %d has %d (>1) leaders", term, len(leaders))
+				cfg.t.Fatalf("term %d has %d (>1) leaders. %v", term, len(leaders), leaders)
 			}
 			if term > lastTermWithLeader {
 				lastTermWithLeader = term
@@ -503,6 +510,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 
 		cfg.mu.Lock()
 		cmd1, ok := cfg.logs[i][index]
+		// PrintfDebug("nCommitted: cfg.logs[%v][%v] = %v %v", i, index, cmd1, ok)
 		cfg.mu.Unlock()
 
 		if ok {
@@ -561,6 +569,7 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 // if retry==false, calls Start() only once, in order
 // to simplify the early Lab 2B tests.
 func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
+	PrintfSuccess("---start(%d). expectedServers: %v---", cmd, expectedServers)
 	t0 := time.Now()
 	starts := 0
 	for time.Since(t0).Seconds() < 10 && cfg.checkFinished() == false {
@@ -589,6 +598,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
+				// PrintfDebug("nCommitted(%v): %v %v", index, nd, cmd1)
 				if nd > 0 && nd >= expectedServers {
 					// committed
 					if cmd1 == cmd {
@@ -599,14 +609,14 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 				time.Sleep(20 * time.Millisecond)
 			}
 			if retry == false {
-				cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
+				cfg.t.Fatalf("one(%v) failed to reach agreement on %v expectedServers", cmd, expectedServers)
 			}
 		} else {
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
 	if cfg.checkFinished() == false {
-		cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
+		cfg.t.Fatalf("one(%v) failed to reach agreement on %v expectedServers", cmd, expectedServers)
 	}
 	return -1
 }
@@ -615,7 +625,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 // print the Test message.
 // e.g. cfg.begin("Test (2B): RPC counts aren't too high")
 func (cfg *config) begin(description string) {
-	fmt.Printf("%s ...\n", description)
+	log.Printf("%s ...\n", description)
 	cfg.t0 = time.Now()
 	cfg.rpcs0 = cfg.rpcTotal()
 	cfg.bytes0 = cfg.bytesTotal()

@@ -8,16 +8,23 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
+
+func TestMain(m *testing.M) {
+	SetDebugMode()
+	m.Run()
+}
 
 func TestInitialElection2A(t *testing.T) {
 	servers := 3
@@ -41,7 +48,7 @@ func TestInitialElection2A(t *testing.T) {
 	time.Sleep(2 * RaftElectionTimeout)
 	term2 := cfg.checkTerms()
 	if term1 != term2 {
-		fmt.Printf("warning: term changed even though there were no failures")
+		fmt.Printf(Red + "warning: term changed even though there were no failures\n" + Reset)
 	}
 
 	// there should still be a leader.
@@ -61,6 +68,10 @@ func TestReElection2A(t *testing.T) {
 
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
+	cfg.checkOneLeader()
+
+	time.Sleep(2 * RaftElectionTimeout)
+
 	cfg.checkOneLeader()
 
 	// if the old leader rejoins, that shouldn't
@@ -184,7 +195,7 @@ func TestRPCBytes2B(t *testing.T) {
 //
 // test just failure of followers.
 //
-func For2023TestFollowerFailure2B(t *testing.T) {
+func TestFollowerFailure2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -231,7 +242,7 @@ func For2023TestFollowerFailure2B(t *testing.T) {
 //
 // test just failure of leaders.
 //
-func For2023TestLeaderFailure2B(t *testing.T) {
+func TestLeaderFailure2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()

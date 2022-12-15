@@ -1,0 +1,20 @@
+name: 6.824
+
+on: [push]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: 1.16
+
+      - name: Test Raft 2A
+        run: cd ./src/raft && time go test -run 2A -race
+      - name: Test Raft 2B
+        run: cd ./src/raft && time go test -run 2B -race

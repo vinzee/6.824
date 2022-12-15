@@ -46,35 +46,6 @@ time go test -run 2A
 $ for i in {0..10}; do go test -run 2A; done
 ```
 
-### Tests
-- [x] TestInitialElection2A
-- [x] TestReElection2A
-- [x] TestManyElections2A
-- [x] TestBasicAgree2B
-- [x] TestRPCBytes2B
-- [x] TestFollowerFailure2B
-- [x] TestLeaderFailure2B
-- [x] TestFailAgree2B
-- [x] TestFailNoAgree2B
-- [x] TestConcurrentStarts2B
-- [x] TestRejoin2B
-- [] TestBackup2B
-- [x] TestCount2B
-- [] TestPersist12C
-- [] TestPersist22C
-- [] TestPersist32C
-- [] TestFigure82C
-- [] TestUnreliableAgree2C
-- [] TestFigure8Unreliable2C
-- [] TestReliableChurn2C
-- [] TestUnreliableChurn2C
-- [] TestSnapshotBasic2D
-- [] TestSnapshotInstall2D
-- [] TestSnapshotInstallUnreliable2D
-- [] TestSnapshotInstallCrash2D
-- [] TestSnapshotInstallUnCrash2D
-- [] TestSnapshotAllCrash2D
-
 ![Raft Figure 2](./docs/raft_figure_2.png "Raft Figure 2")
 
 

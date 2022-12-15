@@ -23,10 +23,10 @@ Final course grades will be based on:
 
 
 ## Lab 2: Raft
-- Raft Paper: https://raft.github.io/raft.pdf
-- https://pdos.csail.mit.edu/6.824/labs/lab-raft.html
-- https://thesquareplanet.com/blog/students-guide-to-raft/
-- https://thesquareplanet.com/blog/instructors-guide-to-raft/
+- Raft Paper: <https://pdos.csail.mit.edu/6.824/papers/raft-extended.pdf> or <https://raft.github.io/raft.pdf>
+- <https://pdos.csail.mit.edu/6.824/labs/lab-raft.html>
+- <https://thesquareplanet.com/blog/students-guide-to-raft>
+- <https://thesquareplanet.com/blog/instructors-guide-to-raft>
     - Figure 2 is, in reality, a formal specification, where every clause is a MUST, not a SHOULD.
 - Reference Implementation: https://github.com/ongardie/raftscope/blob/master/raft.js
 - Reference Implementation: https://github.com/Sorosliu1029/6.824/blob/master/src/raft/raft.go

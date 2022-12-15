@@ -73,3 +73,10 @@ func PrintfPurple(format string, a ...interface{}) (n int, err error) {
 	}
 	return
 }
+
+func PrintfCyan(format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		log.Printf(Cyan+format+Reset, a...)
+	}
+	return
+}

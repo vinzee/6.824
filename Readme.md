@@ -9,13 +9,6 @@
 - Youtube lectures: https://www.youtube.com/playlist?list=PLrw6a1wE39_tb2fErI4-WkMbsvGQk9_UB
 - https://github.com/nsiregar/mit-go
 
-## Grading
-Final course grades will be based on:
-- 50% labs (programming assignments), including optional project
-- 20% mid-term exam
-- 20% final exam
-- 10% paper question answers and your own questions about papers
-
 ## Course Prerequisites
 - http://web.mit.edu/6.033/www/index.shtml (operating systems, networking, distributed systems, and security)
 - https://pdos.csail.mit.edu/6.828/2022/schedule.html (Operating Systems Engineering)
@@ -30,8 +23,13 @@ Final course grades will be based on:
 - <https://thesquareplanet.com/blog/students-guide-to-raft>
 - <https://thesquareplanet.com/blog/instructors-guide-to-raft>
     - Figure 2 is, in reality, a formal specification, where every clause is a MUST, not a SHOULD.
-- Reference Implementation: https://github.com/ongardie/raftscope/blob/master/raft.js
-- Reference Implementation: https://github.com/Sorosliu1029/6.824/blob/master/src/raft/raft.go
+- Reference Implementations:
+    - Raftscope: https://github.com/ongardie/raftscope/blob/master/raft.js
+    - 8.624: https://github.com/Sorosliu1029/6.824/blob/master/src/raft/raft.go
+    - etcd: https://github.com/etcd-io/etcd/blob/main/server/etcdserver/raft.go
+    - hashicorp: https://github.com/hashicorp/raft
+- Blogs
+    - https://eli.thegreenplace.net/2020/implementing-raft-part-0-introduction/
 ```
 # enable debug logs
 DEBUG=true go test -run 2A
@@ -45,9 +43,6 @@ time go test -run 2A
 # test multiple times
 $ for i in {0..10}; do go test -run 2A; done
 ```
-
-![Raft Figure 2](./docs/raft_figure_2.png "Raft Figure 2")
-
 
 ## Go-Lang
 - Race Detection: https://www.sohamkamani.com/golang/data-races/

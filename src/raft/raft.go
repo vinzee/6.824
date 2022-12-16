@@ -85,9 +85,18 @@ type Raft struct {
 	heartbeatTimer time.Time
 	state          state
 	quorum         int
+
 	// index of highest log entry known to be committed (initialized to 0, increases monotonically)
+	// Why are commitIndex volatile?
+	// commitIndex is volatile because Raft can figure out a correct value for it after a reboot using just the persistent state.
+	// Once a leader successfully gets a new log entry committed, it knows everything before that point is also committed.
+	// A follower that crashes and comes back up will be told about the right commitIndex whenever the current leader sends it an AE.
 	commitIndex int
+
 	// index of highest log entry applied to state machine (initialized to 0, increases monotonically)
+	// Why are lastApplied volatile?
+	// lastApplied starts at zero after a reboot because the basic Raft algorithm assumes the service (e.g., a key/value database) doesn’t keep any persistent state.
+	// Thus its state needs to be completely recreated by replaying all log entries.
 	lastApplied int
 
 	// --- volatile state on leaders ---
@@ -95,6 +104,8 @@ type Raft struct {
 	matchIndex []int
 
 	newLogEntries bool // indicates that there are new log entries which aren't sent to peers
+
+	appendEntriesRequestId int
 }
 
 type Log struct {
@@ -346,6 +357,7 @@ type AppendEntriesArgs struct {
 	PrevLogTerm  int   // term of prevLogIndex entry
 	Entries      []Log // log entries to store (empty for heartbeat; may send more than one for efficiency)
 	LeaderCommit int   // leader’s commitIndex
+	RequestId    int
 }
 
 type AppendEntriesReply struct {
@@ -354,6 +366,10 @@ type AppendEntriesReply struct {
 	ConflictingLogIndex int
 	ConflictingLogTerm  int
 	LastIndex           int
+}
+
+func (x *AppendEntriesArgs) toString() string {
+	return fmt.Sprintf("{R.Id:%v. T:%v. L.Id:%v. PL:{I:%v, T:%v}. LC:%v. E:%v}", x.RequestId, x.Term, x.LeaderId, x.PrevLogIndex, x.PrevLogTerm, x.LeaderCommit, x.Entries)
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -421,12 +437,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			if rf.Log[curr_index].Term != args.Entries[i].Term {
 				// 3. If an existing entry conflicts with a new one (same index but different terms),
 				// delete the existing entry and all that follow it (§5.3)
-				PrintfWarn("%v Trimming Log: before:%v, after:%v", rf.me, rf.Log, rf.Log[:curr_index+1])
-				rf.Log = rf.Log[:curr_index+1]
+				// related tests: TestRejoin2B, TestUnreliableAgree2C
+				temp := rf.Log[:curr_index]
+				PrintfWarn("%v Trimming Log: before:%v, after:%v", rf.me, rf.Log, temp)
+				rf.Log = temp
 			} else {
 				// make appendEntries requests idempotent, by ignoring log entries if already present in its log
 				// required for TestConcurrentStarts2B
 				PrintfDebug("ignore %v since its already present in the log", args.Entries[i])
+				curr_index++
 				continue
 			}
 		}
@@ -480,6 +499,7 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 	// TODO: set a max batch size
 	rf.mu.Lock()
 	lastIndexSentToPeers := rf.lastIndex()
+	rf.heartbeatTimer = time.Now()
 	rf.mu.Unlock()
 
 	for i := 0; i < len(rf.peers); i++ {
@@ -500,33 +520,35 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 				PrevLogTerm:  rf.logTerm(rf.nextIndex[server] - 1), // term of prevLogIndex entry
 				Entries:      entries,
 				LeaderCommit: rf.commitIndex,
+				RequestId:    rf.appendEntriesRequestId,
 			}
-			PrintfInfo("%v b4.sendAppendEntries to %v request:%v", rf.me, server, request)
+			rf.appendEntriesRequestId++
+			PrintfInfo("%v b4.sendAppendEntries to %v request:%v", rf.me, server, request.toString())
 			mu.Unlock()
 
 			reply := AppendEntriesReply{}
 			result := rf.sendAppendEntries(server, &request, &reply)
-			// PrintfSuccess("%v sendAppendEntries to %v, %v, %v", rf.me, server, &request, &reply)
 
 			mu.Lock()
 			totalCount += 1
 			if !result {
-				PrintfError("%v sendAppendEntries to %v timed-out!, %v, %v", rf.me, server, &request, &reply)
+				PrintfError("%v sendAppendEntries to %v timed-out!, %v, %v. successCount: %v", rf.me, server, request.toString(), &reply, successCount)
 			} else {
 				if rf.CurrentTerm < reply.Term {
 					rf.stepDown(reply.Term, "detected stale term from AppendEntries.Reply")
+					rf.persist()
 				}
 
 				if rf.state == Leader {
 					if reply.Success {
-						PrintfSuccess("%v sendAppendEntries to %v succeeded, %v, %v", rf.me, server, &request, &reply)
-
 						successCount += 1
 						rf.updateElectionTimer()
 
 						// If successful: update nextIndex and matchIndex for follower (§5.3)
 						rf.matchIndex[server] += len(entries)
 						rf.nextIndex[server] += len(entries)
+
+						PrintfSuccess("%v sendAppendEntries to %v succeeded, %v. successCount: %v", rf.me, server, request.toString(), successCount)
 					} else {
 						// If a follower’s log is inconsistent with the leader’s,
 						// the AppendEntries consistency check will fail in the next AppendEntries RPC.
@@ -538,7 +560,7 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 
 						// Once AppendEntries succeeds, the follower’s log is consistent with the leader’s,
 						// and it will remain that way for the rest of the term.
-						PrintfWarn("%v sendAppendEntries to %v was denied!, %v, %v", rf.me, server, &request, &reply)
+						PrintfWarn("%v sendAppendEntries to %v was denied!, %v, %v. successCount: %v", rf.me, server, request.toString(), &reply, successCount)
 
 						if reply.ConflictingLogIndex == -1 {
 							rf.nextIndex[server] = reply.LastIndex + 1
@@ -623,6 +645,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.newLogEntries = true
 	PrintfSuccess("%v:%v Start(%v). result: true. newLogIndex: %v", rf.me, rf.state, command, newLogIndex)
 	PrintfPurple("%v:%v log: %v. commitIndex: %v", rf.me, rf.state, rf.Log, rf.commitIndex)
+
+	rf.persist()
 
 	// Step 2: (This will happen in rf.sendAppendEntriesToAllPeers() in the next trigger loop)
 	// issue AppendEntries RPCs in parallel to each of the other servers to replicate the entry.
@@ -749,9 +773,9 @@ func (rf *Raft) attemptElection(term int) {
 			} else {
 				if reply.VoteGranted {
 					votesGranted += 1
-					PrintfSuccess("%v was granted vote for term %v from %v. votesGranted: %v", rf.me, request.Term, server, votesGranted)
+					PrintfSuccess("%v was granted vote from %v. term %v. votesGranted: %v", rf.me, request.Term, server, votesGranted)
 				} else {
-					PrintfWarn("%v was not granted vote for term %v from %v. votesGranted: %v", rf.me, request.Term, server, votesGranted)
+					PrintfWarn("%v was not granted vote from %v. term %v. votesGranted: %v", rf.me, request.Term, server, votesGranted)
 				}
 			}
 			cond.Broadcast()

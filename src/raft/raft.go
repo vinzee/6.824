@@ -755,12 +755,14 @@ func (rf *Raft) attemptElection(term int) {
 		}
 
 		go func(server int, mu *sync.Mutex) {
+			mu.Lock()
 			request := RequestVoteArgs{
 				Term:         rf.CurrentTerm,
 				CandidateId:  rf.me,
 				LastLogIndex: rf.lastIndex(),
 				LastLogTerm:  rf.logTerm(rf.lastIndex()),
 			}
+			mu.Unlock()
 
 			var reply RequestVoteReply
 			// PrintfInfo("%v sendRequestVote for term %v to %v.", rf.me, request.Term, server)

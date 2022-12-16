@@ -16,5 +16,9 @@ jobs:
 
       - name: Test Raft 2A
         run: cd ./src/raft && time go test -run 2A -race
+
       - name: Test Raft 2B
         run: cd ./src/raft && time go test -run 2B -race
+
+      - name: Test Raft 2C
+        run: cd ./src/raft && time go test -run 2C -race

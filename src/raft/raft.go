@@ -87,7 +87,6 @@ type Raft struct {
 	// do we need to store this??
 	electionTimer  time.Time
 	heartbeatTimer time.Time
-	snapshotTimer  time.Time
 	state          state
 	quorum         int
 
@@ -190,7 +189,7 @@ func (rf *Raft) logTerm(index int) int {
 	translatedIndex := rf.translateIndex(index)
 
 	if translatedIndex < 0 || translatedIndex >= len(rf.Log) {
-		return 0
+		return rf.LastIncludedTerm
 	}
 
 	return rf.Log[translatedIndex].Term
@@ -233,10 +232,8 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-
 	var CurrentTerm int
 	var VotedFor int
 	var Log []Log
@@ -247,7 +244,6 @@ func (rf *Raft) readPersist(data []byte) {
 		// throw error...
 		PrintfError("readPersist error?")
 	}
-
 	PrintfSuccess("%v readPersist: T:%v. VF:%v. LS:{I:%v,T:%v}", rf.me, CurrentTerm, VotedFor, LastIncludedIndex, LastIncludedTerm)
 
 	rf.CurrentTerm = CurrentTerm
@@ -259,7 +255,6 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.LastIncludedIndex = LastIncludedIndex
 	rf.commitIndex = rf.LastIncludedIndex
 	rf.lastApplied = rf.LastIncludedIndex
-
 	for i := 0; i < len(rf.peers); i++ {
 		rf.matchIndex[i] = rf.LastIncludedIndex
 		rf.nextIndex[i] = rf.LastIncludedIndex + 1
@@ -284,7 +279,11 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(lastIncludedIndex int, snapshot []byte) {
-	PrintfWarn("%v Snapshot start: lastIncludedIndex:%v", rf.me, lastIncludedIndex)
+	go rf.applySnapshot(lastIncludedIndex, snapshot)
+}
+
+func (rf *Raft) applySnapshot(lastIncludedIndex int, snapshot []byte) {
+	// PrintfWarn("%v Snapshot start: lastIncludedIndex:%v. %v", rf.me, lastIncludedIndex, reflect.ValueOf(&rf.mu).Elem().FieldByName("state"))
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -329,9 +328,11 @@ type RequestVoteReply struct {
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	PrintfWarn("%v received RequestVote from %v for term %v", rf.me, args.CandidateId, args.Term)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
+	PrintfWarn("%v received RequestVote2 from %v for term %v", rf.me, args.CandidateId, args.Term)
 
 	// this is crucial for TestReElection2A
 	// when 2 candidates are requesting votes for different terms. the one with the older term has to step down and update term.
@@ -496,7 +497,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		}
 		PrintfWarn("%v denying AppendEntries from %v due to log-term-mismatch. args.PrevLogIndex: %v, args.PrevLogTerm: %v. \nargs.Entries: %v, \nrf.log: %v", rf.me, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, args.Entries, rf.Log)
-
 		return
 	}
 
@@ -574,7 +574,6 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 	lastIndexSentToPeers := rf.lastLogIndex()
 	rf.heartbeatTimer = time.Now()
 	rf.mu.Unlock()
-
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -607,6 +606,8 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 			result := rf.sendAppendEntries(server, &request, &reply)
 
 			mu.Lock()
+			defer mu.Unlock()
+
 			totalCount += 1
 			if !result {
 				// PrintfError("%v sendAppendEntries to %v timed-out!, %v, %v. successCount: %v", rf.me, server, request.toString(), &reply, successCount)
@@ -649,7 +650,6 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 				}
 			}
 			cond.Broadcast()
-			mu.Unlock()
 
 		}(i, &rf.mu)
 	}
@@ -676,12 +676,11 @@ func (rf *Raft) sendAppendEntriesToAllPeers() bool {
 				}
 				rf.applyCh <- applyMsg
 				rf.commitIndex++
-				// PrintfSuccess("%v:%v commited(%v). commitIndex: %v", rf.me, rf.state, log, rf.commitIndex)
+				PrintfSuccess("%v:%v commited(%v). commitIndex: %v", rf.me, rf.state, log, rf.commitIndex)
 			}
 		}
 	}
 	PrintfPurple("%v:%v log: %v. commitIndex: %v", rf.me, rf.state, rf.Log, rf.commitIndex)
-
 	return true
 }
 
@@ -709,6 +708,7 @@ func (x *InstallSnapshotArgs) toString() string {
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	PrintfWarn("%v received InstallSnapshot from %v", rf.me, args.LeaderId)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -791,7 +791,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// If followers crash or run slowly, or if network packets are lost,
 	// the leader retries AppendEntries RPCs indefinitely (even after it has responded to the client)
 	// until all followers eventually store all log entries.
-
 	return newLogIndex, rf.CurrentTerm, true
 }
 
@@ -824,8 +823,9 @@ func (rf *Raft) ticker() {
 
 		// • If election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate:
 		// convert to candidate
+		// PrintfDebug("%v ticker: %v. mutex:%v", rf.me, rf.state, reflect.ValueOf(&rf.mu).Elem().FieldByName("state"))
 		rf.mu.Lock()
-		// PrintfDebug("%v ticker: %v", rf.me, rf.state)
+		// PrintfDebug("%v ticker: %v. mutex:%v", rf.me, rf.state, reflect.ValueOf(&rf.mu).Elem().FieldByName("state"))
 		if rf.state == Follower {
 			// PrintfDebug("%v checking election timer: %v", rf.me, rf.electionTimer)
 			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
@@ -851,13 +851,7 @@ func (rf *Raft) ticker() {
 		}
 		rf.persist()
 
-		// if time.Since(rf.snapshotTimer) > 1000*time.Millisecond && rf.lastLogIndex() > rf.LastIncludedIndex {
-		// 	rf.snapshotTimer = time.Now()
-		// 	go rf.Snapshot()
-		// }
-
 		rf.mu.Unlock()
-
 		time.Sleep(10 * time.Millisecond)
 	}
 }
@@ -867,7 +861,6 @@ func (rf *Raft) attemptElection(term int) {
 	ms := (rand.Int() % 50)
 	// PrintfInfo("%v sleeping for %v", rf.me, ms)
 	time.Sleep(time.Duration(ms) * time.Millisecond)
-
 	rf.mu.Lock()
 	currentState := rf.state
 	rf.mu.Unlock()
@@ -915,7 +908,7 @@ func (rf *Raft) attemptElection(term int) {
 			mu.Lock()
 			votesTotal += 1
 			if !result {
-				// PrintfError("%v sendRequestVote request to %v timed-out!", rf.me, server)
+				PrintfError("%v sendRequestVote request to %v timed-out!", rf.me, server)
 			} else {
 				if reply.VoteGranted {
 					votesGranted += 1
@@ -948,6 +941,7 @@ func (rf *Raft) attemptElection(term int) {
 			break
 		}
 	}
+	PrintfWarn("%v votesGranted(%v)", rf.me, votesGranted)
 
 	// If votes received from majority of servers: become leader
 	// else, retry election
@@ -999,11 +993,6 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.applyCh = applyCh
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
-
-	// A good place to start is to modify your code to so that it is able to store just the part of the log starting at some index X.
-	// Initially you can set X to zero and run the 2B/2C tests.
-	// Then make Snapshot(index) discard the log before index, and set X equal to index.
-	// If all goes well you should now pass the first 2D test.
 
 	for i := 0; i < len(rf.peers); i++ {
 		rf.matchIndex[i] = 0

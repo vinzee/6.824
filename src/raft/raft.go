@@ -771,9 +771,9 @@ func (x *InstallSnapshotArgs) toString() string {
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
-	PrintfWarn("%v:%v:%v received InstallSnapshot from %v", rf.me, rf.state, rf.CurrentTerm, args.LeaderId)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	PrintfWarn("%v:%v:%v received InstallSnapshot from %v", rf.me, rf.state, rf.CurrentTerm, args.LeaderId)
 
 	reply.Term = rf.CurrentTerm
 

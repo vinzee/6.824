@@ -585,7 +585,10 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 func (rf *Raft) sendAppendEntriesToAllPeers() {
+	rf.mu.Lock()
 	rf.updateHeartBeatTimer(false)
+	rf.mu.Unlock()
+
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue

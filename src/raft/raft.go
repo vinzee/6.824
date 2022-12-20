@@ -126,7 +126,7 @@ const (
 	Leader             state = "Leader"
 	electionTimeoutMax int   = 1200
 	electionTimeoutMin int   = 800
-	heartbeatInterval  int   = 10
+	heartbeatInterval  int   = 100
 )
 
 // return currentTerm and whether this server

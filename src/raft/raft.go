@@ -121,9 +121,12 @@ type Log struct {
 type state string
 
 const (
-	Candidate state = "Candidate"
-	Follower  state = "Follower"
-	Leader    state = "Leader"
+	Candidate          state = "Candidate"
+	Follower           state = "Follower"
+	Leader             state = "Leader"
+	electionTimeoutMax int   = 1200
+	electionTimeoutMin int   = 800
+	heartbeatInterval  int   = 10
 )
 
 // return currentTerm and whether this server
@@ -140,14 +143,25 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isleader
 }
 
-// Update Leader's election timer if it win's atleast 1 vote
-// Update election timer once peer becomes a candidate
+func RandRange(from, to int) int {
+	return rand.Intn(to-from) + from
+}
 
-// Update follower's election timer if:
-// 1. Vote is granted to a candidate in a RequestVote RPC call.
-// 2. AppendEntries RPC has the same or greater term.
+// set fast election timeout on startup, with some randomness
+func (rf *Raft) initElectionTimer() {
+	rf.electionTimer = time.Now().Add(time.Duration(RandRange(0, electionTimeoutMax-electionTimeoutMin)) * time.Millisecond)
+}
+
 func (rf *Raft) updateElectionTimer() {
-	rf.electionTimer = time.Now()
+	diff := time.Duration(RandRange(electionTimeoutMin, electionTimeoutMax)) * time.Millisecond
+	rf.electionTimer = time.Now().Add(diff)
+	// PrintfDebug("%v updateElectionTimer: diff:%v. time:%v", rf.me, diff, rf.electionTimer)
+}
+
+func (rf *Raft) updateHeartBeatTimer() {
+	diff := time.Duration(heartbeatInterval) * time.Millisecond
+	rf.heartbeatTimer = time.Now().Add(diff)
+	// PrintfDebug("%v updateElectionTimer: diff:%v. time:%v", rf.me, diff, rf.electionTimer)
 }
 
 func (rf *Raft) isleader() bool {
@@ -360,7 +374,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	// Reject voke if candidate’s log is not "up-to-date:
+	// Reject voke if candidate’s log is not "up-to-date":
 	// Raft determines which of two logs is more up-to-date by comparing the index and term of the last entries in the logs.
 	// See (§5.4 figure 8)
 
@@ -568,6 +582,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 func (rf *Raft) sendAppendEntriesToAllPeers() {
+	rf.heartbeatTimer = time.Now()
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -608,8 +623,14 @@ func (rf *Raft) sendAppendEntriesToPeer(server int, retryCount int) {
 		RequestId:    rf.appendEntriesRequestId,
 	}
 	rf.appendEntriesRequestId++
-	// PrintfInfo("%v b4.sendAppendEntries to %v. retryCount:%v. request:%v", rf.me, server, retryCount, request.toString())
+	PrintfInfo("%v b4.sendAppendEntries to %v. retryCount:%v. request:%v", rf.me, server, retryCount, request.toString())
+
+	current_state := rf.state
 	rf.mu.Unlock()
+
+	if current_state != Leader {
+		PrintfWarn("%v not sendAppendEntries to %v as state has changed.", rf.me, server)
+	}
 
 	reply := AppendEntriesReply{}
 	result := rf.sendAppendEntries(server, &request, &reply)
@@ -634,7 +655,7 @@ func (rf *Raft) sendAppendEntriesToPeer(server int, retryCount int) {
 
 					rf.commitLogs()
 
-					PrintfSuccess("%v sendAppendEntries to %v succeeded. retryCount:%v. %v.", rf.me, server, retryCount, request.toString())
+					PrintfSuccess("%v sendAppendEntries to %v succeeded. retryCount:%v. %v. matchIndex: %v", rf.me, server, retryCount, request.toString(), rf.matchIndex)
 				} else {
 					// If a follower’s log is inconsistent with the leader’s,
 					// the AppendEntries consistency check will fail in the next AppendEntries RPC.
@@ -653,13 +674,15 @@ func (rf *Raft) sendAppendEntriesToPeer(server int, retryCount int) {
 					} else {
 						rf.nextIndex[server] = reply.ConflictIndex
 					}
+					rf.matchIndex[server] = reply.MatchIndex
+
+					go rf.sendAppendEntriesToPeer(server, retryCount+1)
 				}
-				PrintfDebug("%v updated rf.nextIndex: %v", rf.me, rf.nextIndex)
-				go rf.sendAppendEntriesToPeer(server, retryCount+1)
+				PrintfDebug("%v updated rf.matchIndex:%v. rf.nextIndex: %v", rf.me, rf.matchIndex, rf.nextIndex)
 			}
 		}
 	} else {
-		PrintfWarn("%v ignoring result from sendAppendEntries to %v as state has changed, %v, %v.", rf.me, server, request.toString(), reply.toString())
+		// PrintfWarn("%v ignoring result from sendAppendEntries to %v as state has changed, %v, %v.", rf.me, server, request.toString(), reply.toString())
 	}
 
 	rf.persist()
@@ -939,10 +962,10 @@ func (rf *Raft) ticker() {
 		// convert to candidate
 		rf.mu.Lock()
 		// PrintfDebug("%v ticker: %v. mutex:%v", rf.me, rf.state, reflect.ValueOf(&rf.mu).Elem().FieldByName("state"))
-		if rf.state == Follower {
+		if rf.state == Follower || rf.state == Candidate {
 			// PrintfDebug("%v Follower election timer: %v", rf.me, time.Since(rf.electionTimer))
-			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
-				PrintfWarn("%v term %v election timer expired (%v), will attempt election soon...", rf.me, rf.CurrentTerm, time.Since(rf.electionTimer))
+			if rf.electionTimer.Before(time.Now()) {
+				PrintfWarn("%v term %v election timer expired, will attempt election soon...timer:%v , now:%v", rf.me, rf.CurrentTerm, rf.electionTimer, time.Now())
 				rf.state = Candidate
 				// Update election timer once peer becomes a candidate
 				rf.updateElectionTimer()
@@ -953,11 +976,12 @@ func (rf *Raft) ticker() {
 			if time.Since(rf.heartbeatTimer) > 100*time.Millisecond {
 				// Update election timer before sending heartbeat
 				// PrintfInfo("%v sendAppendEntriesToAllPeers: %v", rf.me, time.Since(rf.heartbeatTimer))
-				rf.heartbeatTimer = time.Now()
+				// rf.heartbeatTimer = time.Now()
 				go rf.sendAppendEntriesToAllPeers()
 			}
-			if time.Since(rf.electionTimer) > 1000*time.Millisecond {
+			if rf.electionTimer.Before(time.Now()) {
 				// downgrade leadership
+				// PrintfWarn("%v term %v election timer expired, stepping down. timer:%v , now:%v", rf.me, rf.CurrentTerm, rf.electionTimer, time.Now())
 				rf.stepDown(rf.CurrentTerm, "electionTimer has expired")
 			}
 		}
@@ -973,20 +997,20 @@ func (rf *Raft) attemptElection(term int, retryCount int) {
 		panic(fmt.Sprintf("%v attemptElection retryCount > %v", rf.me, retryCount))
 	}
 	// sleep for random time
-	ms := (rand.Int() % 70)
-	PrintfInfo("%v sleeping for %v before election", rf.me, ms)
-	time.Sleep(time.Duration(ms) * time.Millisecond)
+	// ms := (rand.Int() % 70)
+	// PrintfInfo("%v sleeping for %v before election", rf.me, ms)
+	// time.Sleep(time.Duration(ms) * time.Millisecond)
 	rf.mu.Lock()
 	currentState := rf.state
 	rf.mu.Unlock()
 	if currentState != Candidate {
-		PrintfWarn("%v Skipping election as state has changed to %v", rf.me, currentState)
+		// PrintfWarn("%v Skipping election as state has changed to %v", rf.me, currentState)
 		return
 	}
 
-	electionStartTime := time.Now()
+	// electionStartTime := time.Now()
 
-	PrintfInfo("%v attempting election for term: %v ", rf.me, term)
+	PrintfInfo("%v attempting election for term: %v. retryCount: %v", rf.me, term, retryCount)
 
 	// On conversion to candidate, start election.
 	// TODO: If AppendEntries RPC received from new leader: convert to follower
@@ -1051,10 +1075,11 @@ func (rf *Raft) attemptElection(term int, retryCount int) {
 			return
 		}
 
-		if time.Since(electionStartTime) > 500*time.Millisecond {
-			PrintfDebug("%v time since electionStartTime: %v", rf.me, time.Since(electionStartTime))
-			break
-		}
+		// FIXME
+		// if time.Since(electionStartTime) > 500*time.Millisecond {
+		// 	PrintfDebug("%v time since electionStartTime: %v", rf.me, time.Since(electionStartTime))
+		// 	break
+		// }
 	}
 
 	// If votes received from majority of servers: become leader
@@ -1065,7 +1090,7 @@ func (rf *Raft) attemptElection(term int, retryCount int) {
 		// When a leader first comes to power,
 		// it initializes all nextIndex values to the index just after the last one in its log
 		for i := 0; i < len(rf.peers); i++ {
-			rf.matchIndex[i] = rf.lastLogIndex()
+			// rf.matchIndex[i] = rf.lastLogIndex()
 			rf.nextIndex[i] = rf.lastLogIndex() + 1
 		}
 
@@ -1074,10 +1099,12 @@ func (rf *Raft) attemptElection(term int, retryCount int) {
 
 		// will trigger append entries
 		rf.heartbeatTimer = time.Now().Add(-1 * time.Minute)
+		rf.updateElectionTimer()
 		// go rf.sendAppendEntriesToAllPeers()
 	} else {
 		PrintfError("------- %v lost election for term %v -------", rf.me, rf.CurrentTerm)
-		go rf.attemptElection(rf.CurrentTerm+1, retryCount+1)
+		rf.updateElectionTimer()
+		// go rf.attemptElection(rf.CurrentTerm+1, retryCount+1)
 	}
 }
 
@@ -1104,7 +1131,7 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 
 	rf.VotedFor = -1
 	rf.CurrentTerm = 0
-	rf.electionTimer = time.Now().Add(-1 * time.Minute)
+	rf.initElectionTimer()
 	rf.state = Follower // start off as follower
 	rf.applyCh = applyCh
 	rf.nextIndex = make([]int, len(rf.peers))

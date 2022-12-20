@@ -158,10 +158,13 @@ func (rf *Raft) updateElectionTimer() {
 	// PrintfDebug("%v updateElectionTimer: diff:%v. time:%v", rf.me, diff, rf.electionTimer)
 }
 
-func (rf *Raft) updateHeartBeatTimer() {
-	diff := time.Duration(heartbeatInterval) * time.Millisecond
-	rf.heartbeatTimer = time.Now().Add(diff)
-	// PrintfDebug("%v updateElectionTimer: diff:%v. time:%v", rf.me, diff, rf.electionTimer)
+func (rf *Raft) updateHeartBeatTimer(triggerHeartbeats bool) {
+	if triggerHeartbeats {
+		rf.heartbeatTimer = time.Now().Add(-1 * time.Minute)
+	} else {
+		rf.heartbeatTimer = time.Now().Add(time.Duration(heartbeatInterval) * time.Millisecond)
+	}
+	// PrintfDebug("%v heartbeatTimer:%v", rf.me, rf.heartbeatTimer)
 }
 
 func (rf *Raft) isleader() bool {
@@ -582,7 +585,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 func (rf *Raft) sendAppendEntriesToAllPeers() {
-	rf.heartbeatTimer = time.Now()
+	rf.updateHeartBeatTimer(false)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -924,7 +927,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// If followers crash or run slowly, or if network packets are lost,
 	// the leader retries AppendEntries RPCs indefinitely (even after it has responded to the client)
 	// until all followers eventually store all log entries.
-	rf.heartbeatTimer = time.Now().Add(-1 * time.Minute)
+	rf.updateHeartBeatTimer(true)
 
 	rf.persist()
 
@@ -973,10 +976,9 @@ func (rf *Raft) ticker() {
 				go rf.attemptElection(rf.CurrentTerm+1, 0)
 			}
 		} else if rf.state == Leader {
-			if time.Since(rf.heartbeatTimer) > 100*time.Millisecond {
+			if rf.heartbeatTimer.Before(time.Now()) {
 				// Update election timer before sending heartbeat
 				// PrintfInfo("%v sendAppendEntriesToAllPeers: %v", rf.me, time.Since(rf.heartbeatTimer))
-				// rf.heartbeatTimer = time.Now()
 				go rf.sendAppendEntriesToAllPeers()
 			}
 			if rf.electionTimer.Before(time.Now()) {
@@ -1008,13 +1010,9 @@ func (rf *Raft) attemptElection(term int, retryCount int) {
 		return
 	}
 
-	// electionStartTime := time.Now()
-
 	PrintfInfo("%v attempting election for term: %v. retryCount: %v", rf.me, term, retryCount)
 
 	// On conversion to candidate, start election.
-	// TODO: If AppendEntries RPC received from new leader: convert to follower
-	// TODO: If election timeout elapses: start new election
 	rf.mu.Lock()
 	rf.CurrentTerm = term
 	rf.VotedFor = rf.me
@@ -1074,12 +1072,6 @@ func (rf *Raft) attemptElection(term int, retryCount int) {
 			PrintfWarn("%v ignoring voting result as state or term has changed", rf.me)
 			return
 		}
-
-		// FIXME
-		// if time.Since(electionStartTime) > 500*time.Millisecond {
-		// 	PrintfDebug("%v time since electionStartTime: %v", rf.me, time.Since(electionStartTime))
-		// 	break
-		// }
 	}
 
 	// If votes received from majority of servers: become leader
@@ -1098,13 +1090,12 @@ func (rf *Raft) attemptElection(term int, retryCount int) {
 		PrintfPurple("%v:%v log: %v. commitIndex: %v, lastApplied:%v", rf.me, rf.state, rf.Log, rf.commitIndex, rf.lastApplied)
 
 		// will trigger append entries
-		rf.heartbeatTimer = time.Now().Add(-1 * time.Minute)
+		rf.updateHeartBeatTimer(true)
 		rf.updateElectionTimer()
 		// go rf.sendAppendEntriesToAllPeers()
 	} else {
 		PrintfError("------- %v lost election for term %v -------", rf.me, rf.CurrentTerm)
 		rf.updateElectionTimer()
-		// go rf.attemptElection(rf.CurrentTerm+1, retryCount+1)
 	}
 }
 

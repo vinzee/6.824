@@ -1182,6 +1182,10 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 	cfg.end()
 }
 
+// A good place to start is to modify your code to so that it is able to store just the part of the log starting at some index X.
+// Initially you can set X to zero and run the 2B/2C tests.
+// Then make Snapshot(index) discard the log before index, and set X equal to index.
+// If all goes well you should now pass the first 2D test.
 func TestSnapshotBasic2D(t *testing.T) {
 	snapcommon(t, "Test (2D): snapshots basic", false, true, false)
 }

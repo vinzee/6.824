@@ -28,8 +28,22 @@
     - 8.624: https://github.com/Sorosliu1029/6.824/blob/master/src/raft/raft.go
     - etcd: https://github.com/etcd-io/etcd/blob/main/server/etcdserver/raft.go
     - hashicorp: https://github.com/hashicorp/raft
-- Blogs
+- Best Raft Blogs
     - https://eli.thegreenplace.net/2020/implementing-raft-part-0-introduction/
+    - https://eli.thegreenplace.net/2020/implementing-raft-part-3-persistence-and-optimizations/
+- https://groups.google.com/g/raft-dev/c/Ezijjiolr_A?pli=1
+
+### Behavior during Network Partition
+Assume the network is divided into two parts. The first has two nodes with term 2, and the second has three nodes with term 1. So the second has the majority and will commit log entries. When the network recovered (the partition is healed) and the leader hears about a higher term it will step down, but another election will simply elect one of the three nodes on the majority side of the partition. The leader shouldn't simply ignore a higher term.
+
+However, in most implementations these days, a *pre-vote protocol* is used. That would ensure that the nodes on the smaller side of the partition never even transition to candidate and increment the term since they can't win an election, and the leader would never hear of a higher term and have to step down.
+
+### What happens to replicated but uncommited logs ??
+- Supposed a 3-member raft cluster a[master],b,c. Client sends command to a, a replicate it to b and c, a apply the log to the status machine and response to client, then crash before replicate the committed state to b and c.
+- Short Ans: The next leader will commit those entries.
+- Long Ans: When b becomes the leader it will commit the entry for which it never received the updated commitIndex from the prior leader. Indeed, part of the new leader's responsibilities when it becomes the leader is to ensure all entries it logged prior to the start of its term are stored on a majority of servers and then commit them. That means server B sends an AppendEntries RPC to C, verifies that C has all the entries prior to the start of leader B's term, then increases the commitIndex beyond the start of its term (usually by committing a no-op entry) and applies the entries left over from the prior term to its state machine.
+- https://groups.google.com/g/raft-dev/c/n8YledqIrUs
+
 ```
 # enable debug logs
 DEBUG=true go test -run 2A

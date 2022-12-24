@@ -305,6 +305,7 @@ func (rf *Raft) processSnapshot(lastIncludedIndex int, snapshot []byte) {
 	// PrintfWarn("%v Snapshot start: lastIncludedIndex:%v. %v", rf.me, lastIncludedIndex, reflect.ValueOf(&rf.mu).Elem().FieldByName("state"))
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	if lastIncludedIndex < rf.LastIncludedIndex {
 		PrintfWarn("%v Ignore Snapshot(%v) as Log has already been trimmed upto %v", rf.me, lastIncludedIndex, rf.LastIncludedIndex)
@@ -629,7 +630,7 @@ func (rf *Raft) sendAppendEntriesToPeer(server int, retryCount int) {
 		RequestId:    rf.appendEntriesRequestId,
 	}
 	rf.appendEntriesRequestId++
-	PrintfInfo("%v b4.sendAppendEntries to %v. retryCount:%v. request:%v", rf.me, server, retryCount, request.toString())
+	// PrintfInfo("%v b4.sendAppendEntries to %v. retryCount:%v. request:%v", rf.me, server, retryCount, request.toString())
 
 	current_state := rf.state
 	rf.mu.Unlock()
@@ -661,7 +662,7 @@ func (rf *Raft) sendAppendEntriesToPeer(server int, retryCount int) {
 
 					rf.commitLogs()
 
-					PrintfSuccess("%v sendAppendEntries to %v succeeded. retryCount:%v. %v. matchIndex: %v", rf.me, server, retryCount, request.toString(), rf.matchIndex)
+					PrintfSuccess("%v sendAppendEntries to %v succeeded. retryCount:%v. %v. matchIndex: %v. nextIndex: %v", rf.me, server, retryCount, request.toString(), rf.matchIndex, rf.nextIndex)
 				} else {
 					// If a follower’s log is inconsistent with the leader’s,
 					// the AppendEntries consistency check will fail in the next AppendEntries RPC.
@@ -673,8 +674,6 @@ func (rf *Raft) sendAppendEntriesToPeer(server int, retryCount int) {
 
 					// Once AppendEntries succeeds, the follower’s log is consistent with the leader’s,
 					// and it will remain that way for the rest of the term.
-					PrintfWarn("%v sendAppendEntries to %v was denied! retryCount:%v. %v, %v.", rf.me, server, retryCount, request.toString(), reply.toString())
-
 					if reply.ConflictIndex == 0 {
 						rf.nextIndex[server] = reply.MatchIndex + 1
 					} else {
@@ -682,9 +681,10 @@ func (rf *Raft) sendAppendEntriesToPeer(server int, retryCount int) {
 					}
 					rf.matchIndex[server] = reply.MatchIndex
 
+					PrintfWarn("%v sendAppendEntries to %v was denied! retryCount:%v. %v, %v. matchIndex: %v. nextIndex: %v", rf.me, server, retryCount, request.toString(), reply.toString(), rf.matchIndex, rf.nextIndex)
+
 					go rf.sendAppendEntriesToPeer(server, retryCount+1)
 				}
-				PrintfDebug("%v updated rf.matchIndex:%v. rf.nextIndex: %v", rf.me, rf.matchIndex, rf.nextIndex)
 			}
 		}
 	} else {
@@ -1084,8 +1084,8 @@ func (rf *Raft) attemptElection(term int, retryCount int) {
 
 		// When a leader first comes to power,
 		// it initializes all nextIndex values to the index just after the last one in its log
+		rf.matchIndex[rf.me] = rf.lastLogIndex()
 		for i := 0; i < len(rf.peers); i++ {
-			// rf.matchIndex[i] = rf.lastLogIndex()
 			rf.nextIndex[i] = rf.lastLogIndex() + 1
 		}
 

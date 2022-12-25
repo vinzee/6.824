@@ -649,7 +649,7 @@ func (cfg *config) end() {
 		cfg.mu.Unlock()
 
 		fmt.Printf("  ... Passed --")
-		fmt.Printf("  %4.1f  %d %4d %7d %4d\n", t, npeers, nrpc, nbytes, ncmds)
+		fmt.Printf("  time:%4.1fs  peers:%d rpc:%4d bytes:%7d ncmds:%4d\n", t, npeers, nrpc, nbytes, ncmds)
 	}
 }
 

@@ -25,3 +25,6 @@ jobs:
 
       - name: Test Raft 2D
         run: cd ./src/raft && time go test -run 2D -race
+
+      - name: Test KV 3A
+        run: cd ./src/kvraft && time go test -run 3A -race
